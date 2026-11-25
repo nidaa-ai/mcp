@@ -352,7 +352,10 @@ export function useNidaa() {
 
       session.on("userTranscript", ({ segmentId, text, final }) => {
         const t = (text ?? "").trim();
-        if (t) upsertBubble(`u-${segmentId}`, "user", t, final);
+        // The SDK echoes every typed turn locally as a userTranscript — the
+        // injected marker is machinery, never a bubble on the call screen.
+        if (!t || t === AGENT_UPDATE_MARKER) return;
+        upsertBubble(`u-${segmentId}`, "user", t, final);
       });
       session.on("agentResponseDelta", ({ segmentId, text }) => {
         const t = (text ?? "").trim();
