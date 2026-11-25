@@ -6,6 +6,7 @@
  *   notify_task_complete → RINGING keep-alive → (user answers) →
  *   user speaks via the custom-LLM bridge → ChatGPT replies with
  *   send_call_update (must be spoken instantly by the LLM bridge) →
+ *   duplicate marker injection stays SILENT → new update + marker is spoken →
  *   USER_SAID directive → HEARTBEAT silence → IN_LOOP status →
  *   user hangs up from the app → CALL_ENDED (only exit).
  *
@@ -160,7 +161,10 @@ async function main() {
     `status ${llm.status}, spoken: ${spoken.slice(0, 50)}`,
   );
 
-  /* 6b — marker turn with nothing pending → honest relay line (not 'تمام') */
+  /* 6b — duplicate marker turn (nothing pending) → SILENCE, never a dead line.
+   * The in-turn wait loop above already claimed and spoke the reply; this is
+   * exactly the race that used to make the call say "لسه مفيش رد" while the
+   * reply was on screen a second earlier. */
   const marker = await fetch(`${APP}/api/llm/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
@@ -171,14 +175,74 @@ async function main() {
       fishaudio_extra_body: { call_id: callId },
     }),
   }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
-  const markerSpoken = sseText(marker.text);
+  const markerSpoken = sseText(marker.text).trim();
   check(
-    "marker (nothing pending) → 'لسه مفيش رد جديد من الإيجنت'",
-    marker.ok && markerSpoken.includes("لسه مفيش رد جديد"),
-    markerSpoken.slice(0, 40),
+    "marker (duplicate race) → SILENCE — no 'no reply' dead line",
+    marker.ok && markerSpoken === "" ,
+    `spoken: "${markerSpoken.slice(0, 40)}"`,
   );
 
-  /* 6c — agent loop broken → pure relay line, NEVER self-answering (no 503 fallback) */
+  /* 6b2 — a NEW update arrives → the marker turn claims it and speaks it */
+  const upd2 = await mcp(key, "tools/call", {
+    name: "send_call_update",
+    arguments: { call_id: callId, message: "واتأكدت: الدفع تمام تمام.", kind: "result" },
+  });
+  const up2 = payloadOf(upd2);
+  check("send_call_update (fresh) → SPOKEN_LIVE", up2.directive?.startsWith("SPOKEN_LIVE"), `seq ${up2.seq}`);
+  const marker2 = await fetch(`${APP}/api/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "bridge-test",
+      stream: true,
+      messages: [{ role: "user", content: "__NDAA_AGENT_UPDATE__" }],
+      fishaudio_extra_body: { call_id: callId },
+    }),
+  }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
+  const marker2Spoken = sseText(marker2.text);
+  check(
+    "marker (new update) → claims + speaks it as the agent's reply",
+    marker2.ok && marker2Spoken.includes("رد الإيجنت") && marker2Spoken.includes("الدفع تمام"),
+    marker2Spoken.slice(0, 50),
+  );
+
+  /* 6d — agent following + reply late → short natural hold line, then a tiny
+   * acknowledgment on the next turn (never the same sentence twice) */
+  await db.execute({ sql: "UPDATE calls SET last_agent_poll = ? WHERE id = ?", args: [Date.now(), callId] });
+  const hold1 = await fetch(`${APP}/api/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "bridge-test",
+      stream: true,
+      messages: [{ role: "user", content: "طب اعمل ايه دلوقتي؟" }],
+      fishaudio_extra_body: { call_id: callId },
+    }),
+  }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
+  const hold1Spoken = sseText(hold1.text).trim();
+  check(
+    "user turn, agent working → short varied hold line (not the old fixed one)",
+    hold1.ok && hold1Spoken.length > 0 && hold1Spoken.length <= 60 && !hold1Spoken.includes("مفيش رد"),
+    hold1Spoken.slice(0, 50),
+  );
+  const hold2 = await fetch(`${APP}/api/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "bridge-test",
+      stream: true,
+      messages: [{ role: "user", content: "ومدى؟" }],
+      fishaudio_extra_body: { call_id: callId },
+    }),
+  }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
+  const hold2Spoken = sseText(hold2.text).trim();
+  check(
+    "consecutive turns → tiny ack, different wording each time",
+    hold2.ok && hold2Spoken.length > 0 && hold2Spoken !== hold1Spoken && !hold2Spoken.includes("مفيش رد"),
+    hold2Spoken.slice(0, 50),
+  );
+
+  /* 6c — agent loop broken → brief honest relay line, NEVER self-answering */
   await db.execute({
     sql: "UPDATE calls SET last_agent_poll = ? WHERE id = ?",
     args: [Date.now() - 300_000, callId],
@@ -195,9 +259,9 @@ async function main() {
   }).then(async (r) => ({ ok: r.ok, status: r.status, text: await r.text() }));
   const noAgentSpoken = sseText(noAgent.text);
   check(
-    "agent not connected → relay says so (queue kept, no self-answer)",
-    noAgent.ok && noAgent.status === 200 && noAgentSpoken.includes("وسيطك") && noAgentSpoken.includes("مش متوصل"),
-    noAgentSpoken.slice(0, 50),
+    "agent not connected → honest brief line (queue kept, no self-answer)",
+    noAgent.ok && noAgent.status === 200 && noAgentSpoken.includes("مش متوصل") && !noAgentSpoken.includes("وسيطك"),
+    noAgentSpoken.slice(0, 60),
   );
 
   /* 7 — next poll: the user utterance must arrive as USER_SAID */

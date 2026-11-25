@@ -32,6 +32,9 @@ export function useNidaa() {
   const injectedUpdatesRef = useRef<string[]>([]);
   const esRef = useRef<EventSource | null>(null);
   const busyRef = useRef(false);
+  /** Last call_event seq delivered over SSE — the reconnect cursor. */
+  const lastSeqRef = useRef(0);
+  const incomingRef = useRef<{ id: string; title: string; summary: string; at: number } | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -126,6 +129,12 @@ export function useNidaa() {
 
   /* -------------------------------------------------------------- SSE ---- */
 
+  /**
+   * Show the update as a purple bubble, then inject the marker turn so the
+   * relay speaks it out loud right now. One retry on failure — a duplicate
+   * injection is harmless now (the server stays silent if nothing is left
+   * to claim), so erring on the side of retrying keeps the call live.
+   */
   const injectAgentUpdate = useCallback(async (text: string, seq: number) => {
     // purple bubble on screen
     setBubbles((prev) =>
@@ -135,11 +144,16 @@ export function useNidaa() {
     );
     injectedUpdatesRef.current.push(norm(text));
     // speak it inside the call right now
-    const session = sessionRef.current;
-    if (session) {
-      try {
-        await session.sendUserMessage(AGENT_UPDATE_MARKER, { audio: true });
-      } catch { /* session may be closing */ }
+    const send = () => {
+      const session = sessionRef.current;
+      if (!session) return;
+      session.sendUserMessage(AGENT_UPDATE_MARKER, { audio: true });
+    };
+    try {
+      send();
+    } catch {
+      await new Promise((r) => setTimeout(r, 700));
+      try { send(); } catch { /* session closing — give up */ }
     }
   }, []);
 
@@ -153,69 +167,151 @@ export function useNidaa() {
     loadConfig(token);
   }, [loadConfig]);
 
+  useEffect(() => { incomingRef.current = incoming; }, [incoming]);
+
   useEffect(() => {
     const token = tokenRef.current;
     if (!token || phase !== "ready") return;
 
-    const es = new EventSource(`/api/events?token=${token}`);
-    esRef.current = es;
+    let closed = false;
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
 
-    es.addEventListener("call:incoming", async (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as { call_id: string; text: string };
-      if (activeIdRef.current || busyRef.current) return; // already in a call
-      busyRef.current = true;
-      try {
-        const res = await fetch(`/api/calls/${data.call_id}?token=${token}`, { cache: "no-store" });
-        const call = (await res.json()) as { id: string; title: string; summary: string; status: string };
-        if (["ended", "missed", "declined", "failed"].includes(call.status)) {
+    /** Attach a handler that tracks the global seq cursor (dedupe + reconnect). */
+    const on = (name: string, fn: (data: Record<string, unknown>) => void) => {
+      es?.addEventListener(name, (ev) => {
+        try {
+          const data = JSON.parse((ev as MessageEvent).data) as Record<string, unknown>;
+          const seq = Number(data.seq ?? 0);
+          if (seq > 0) {
+            if (seq <= lastSeqRef.current) return; // replayed duplicate — skip
+            lastSeqRef.current = seq;
+          }
+          fn(data);
+        } catch { /* malformed frame */ }
+      });
+    };
+
+    const connect = () => {
+      if (closed) return;
+      // Reconnect with the exact cursor — anything that landed while we were
+      // reconnecting is still delivered, so agent replies never go unspoken.
+      const since = lastSeqRef.current;
+      es = new EventSource(`/api/events?token=${token}${since > 0 ? `&since=${since}` : ""}`);
+      esRef.current = es;
+
+      es.addEventListener("hello", () => { failures = 0; });
+
+      on("call:incoming", async (data) => {
+        if (activeIdRef.current || busyRef.current) return; // already in a call
+        busyRef.current = true;
+        try {
+          const res = await fetch(`/api/calls/${data.call_id}?token=${token}`, { cache: "no-store" });
+          const call = (await res.json()) as { id: string; title: string; summary: string; status: string };
+          if (["ended", "missed", "declined", "failed"].includes(call.status)) {
+            busyRef.current = false;
+            return;
+          }
+          setIncoming({ id: call.id, title: call.title || "مكالمة من الإيجنت", summary: call.summary, at: Date.now() });
+          if (!ringtoneRef.current) ringtoneRef.current = new Ringtone();
+          ringtoneRef.current.start();
+        } catch {
           busyRef.current = false;
-          return;
         }
-        setIncoming({ id: call.id, title: call.title || "مكالمة من الإيجنت", summary: call.summary, at: Date.now() });
-        if (!ringtoneRef.current) ringtoneRef.current = new Ringtone();
-        ringtoneRef.current.start();
-      } catch {
-        busyRef.current = false;
-      }
-    });
+      });
 
-    es.addEventListener("call:update", (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as { call_id: string; seq: number; text: string };
-      if (data.call_id === activeIdRef.current) {
-        injectAgentUpdate(data.text, data.seq);
-      } else if (incoming && data.call_id === incoming.id) {
-        // update arrived before answering — queue visually
-        setBubbles((prev) =>
-          prev.some((b) => b.key === `upd-${data.seq}`)
-            ? prev
-            : [...prev, { key: `upd-${data.seq}`, role: "update", text: data.text, ts: Date.now() }],
-        );
-      }
-    });
+      on("call:update", (data) => {
+        const text = String(data.text ?? "");
+        const seq = Number(data.seq ?? 0);
+        if (data.call_id === activeIdRef.current) {
+          void injectAgentUpdate(text, seq);
+        } else if (incomingRef.current && data.call_id === incomingRef.current.id) {
+          // update arrived before answering — queue visually
+          setBubbles((prev) =>
+            prev.some((b) => b.key === `upd-${seq}`)
+              ? prev
+              : [...prev, { key: `upd-${seq}`, role: "update", text, ts: Date.now() }],
+          );
+        }
+      });
 
-    es.addEventListener("call:status", (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as { call_id: string; status: string };
-      if (data.call_id === activeIdRef.current && ["ended", "missed", "declined", "failed"].includes(data.status)) {
-        finishCallUI(`المكالمة انتهت (${data.status})`);
-      } else if (incoming && data.call_id === incoming.id && ["missed", "declined", "ended", "failed"].includes(data.status)) {
-        ringtoneRef.current?.stop();
-        setIncoming(null);
-        busyRef.current = false;
-      }
-    });
+      on("call:status", (data) => {
+        const status = String(data.status ?? "");
+        if (data.call_id === activeIdRef.current && ["ended", "missed", "declined", "failed"].includes(status)) {
+          finishCallUI(`المكالمة انتهت (${status})`);
+        } else if (incomingRef.current && data.call_id === incomingRef.current.id && ["missed", "declined", "ended", "failed"].includes(status)) {
+          ringtoneRef.current?.stop();
+          setIncoming(null);
+          busyRef.current = false;
+        }
+      });
 
-    es.addEventListener("call:event", (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as { call_id: string; text: string; kind: string };
-      if (data.call_id === activeIdRef.current) {
-        setBubbles((prev) => [...prev, { key: `sys-${Date.now()}-${prev.length}`, role: "system", text: data.text ?? "", ts: Date.now() }]);
-      }
-    });
+      on("call:event", (data) => {
+        if (data.call_id === activeIdRef.current) {
+          setBubbles((prev) => [...prev, { key: `sys-${Date.now()}-${prev.length}`, role: "system", text: String(data.text ?? ""), ts: Date.now() }]);
+        }
+      });
+
+      // The server ends the stream every ~55s ("bye"). Reconnect at once
+      // WITH the cursor — native EventSource auto-reconnect would reuse the
+      // URL without it and silently skip whatever lands in the gap.
+      const schedule = (ms: number) => {
+        if (closed || reconnectTimer) return;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, ms);
+      };
+      es.addEventListener("bye", () => {
+        es?.close();
+        esRef.current = null;
+        schedule(250);
+      });
+      es.onerror = () => {
+        es?.close();
+        esRef.current = null;
+        failures += 1;
+        schedule(Math.min(8_000, 400 * 2 ** Math.min(failures, 5)));
+      };
+    };
+
+    connect();
 
     return () => {
-      es.close();
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
       esRef.current = null;
     };
-  }, [phase, injectAgentUpdate, incoming, finishCallUI]);
+  }, [phase, injectAgentUpdate, finishCallUI]);
+
+  /**
+   * Safety net while the voice session is live: if the SSE stream ever missed
+   * an agent update (tab throttling, dropped reconnect), this 5s poll sees the
+   * still-unclaimed reply and injects the marker so it gets spoken anyway.
+   */
+  useEffect(() => {
+    const token = tokenRef.current;
+    const id = active?.id;
+    const status = active?.status;
+    if (!token || !id || (status !== "connected" && status !== "connecting")) return;
+    const tick = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/calls/${id}?token=${token}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const info = (await res.json()) as { status?: string; pending_agent_updates?: number };
+        if (info.status && ["ended", "missed", "declined", "failed"].includes(info.status)) {
+          finishCallUI(`المكالمة انتهت (${info.status})`);
+          return;
+        }
+        if (info.pending_agent_updates) {
+          try { sessionRef.current?.sendUserMessage(AGENT_UPDATE_MARKER, { audio: true }); } catch { /* noop */ }
+        }
+      } catch { /* next tick */ }
+    }, 5_000);
+    return () => clearInterval(tick);
+  }, [active?.id, active?.status, finishCallUI]);
 
   /* ------------------------------------------------------ accept flow ---- */
 
@@ -255,13 +351,18 @@ export function useNidaa() {
       const session = await AgentSession.start({ sessionToken: sessionToken as never });
 
       session.on("userTranscript", ({ segmentId, text, final }) => {
-        upsertBubble(`u-${segmentId}`, "user", text, final);
+        const t = (text ?? "").trim();
+        if (t) upsertBubble(`u-${segmentId}`, "user", t, final);
       });
       session.on("agentResponseDelta", ({ segmentId, text }) => {
-        if (!isInjectedUpdate(text)) upsertBubble(`a-${segmentId}`, "agent", text, false);
+        const t = (text ?? "").trim();
+        if (!t) return; // silent turns (duplicate injections) — no empty bubble
+        if (!isInjectedUpdate(t)) upsertBubble(`a-${segmentId}`, "agent", t, false);
       });
       session.on("agentResponse", ({ segmentId, text }) => {
-        if (!isInjectedUpdate(text)) upsertBubble(`a-${segmentId}`, "agent", text, true);
+        const t = (text ?? "").trim();
+        if (!t) return; // silent turns (duplicate injections) — no empty bubble
+        if (!isInjectedUpdate(t)) upsertBubble(`a-${segmentId}`, "agent", t, true);
       });
       session.on("modeChange", (mode) => {
         setActive((prev) => (prev ? { ...prev, mode } : prev));
@@ -281,7 +382,7 @@ export function useNidaa() {
         .then((r) => r.json() as Promise<{ pending_agent_updates?: number }>)
         .catch(() => null);
       if (info?.pending_agent_updates) {
-        await session.sendUserMessage(AGENT_UPDATE_MARKER, { audio: true });
+        try { session.sendUserMessage(AGENT_UPDATE_MARKER, { audio: true }); } catch { /* noop */ }
       }
     } catch (err) {
       setActive((prev) => (prev ? { ...prev, status: "error", endReason: (err as Error).message } : null));

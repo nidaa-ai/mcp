@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 import { createHash } from "crypto";
 import { checkAgentAuth, unauthorized } from "@/lib/auth";
-import { getCall, addEvent, getPendingAgentUpdates, isAgentFollowing, setCallFields } from "@/lib/calls";
+import { getCall, addEvent, claimAgentUpdates, isAgentFollowing, setCallFields, sleep } from "@/lib/calls";
 import { LLM_BRIDGE_WAIT_MS } from "@/lib/env";
-import { sleep } from "@/lib/calls";
+import { relayState, noteReplySpoken, happenedWithin } from "@/lib/relay-state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,29 +13,51 @@ export const maxDuration = 30;
  * OpenAI-compatible chat-completions endpoint that Fish Audio's Voice Agent
  * (custom LLM) calls on every conversation turn.
  *
- * Pure RELAY (وسيط) between the human on the call and the MCP client
- * (ChatGPT/Claude) — this endpoint NEVER answers requests by itself:
- *  - logs each user utterance so wait_for_call_updates returns it to the agent,
- *  - waits for the agent's send_call_update reply and speaks it, framed as
- *    "رد الإيجنت: ..." so it is always clear WHO answered,
- *  - while the agent is still working it says it is following up with them,
- *  - if the agent is not connected to the call it says so (and the speech is
- *    already queued for the agent to pick up when it returns),
- *  - handles the browser's "__NDAA_AGENT_UPDATE__" injection turn that makes
- *    late agent updates audible immediately.
+ * A LIVE relay between the human on the call and the connected AI agent
+ * (ChatGPT/Claude over MCP). This endpoint NEVER answers requests by itself:
+ *  - every user utterance is logged so wait_for_call_updates returns it to
+ *    the agent as a live command,
+ *  - the turn waits a few seconds for the agent's send_call_update reply and
+ *    speaks it the MOMENT it lands, framed as "رد الإيجنت: ..." so it is
+ *    always clear WHO answered,
+ *  - while the agent is still working it says one short human hold line, then
+ *    tiny varied acknowledgments — never the same sentence twice,
+ *  - the browser injects "__NDAA_AGENT_UPDATE__" turns to make late agent
+ *    replies audible immediately. A duplicate injection (the reply was
+ *    already spoken by the in-turn wait loop, which won the atomic claim)
+ *    stays SILENT — no "no reply yet" dead line, ever,
+ *  - if the agent is not connected to the call it says so once, briefly —
+ *    the speech is already queued for the agent to pick up when it returns.
  */
 export const AGENT_UPDATE_MARKER = "__NDAA_AGENT_UPDATE__";
 
-const HOLD_LINE = "ثانية واحدة، بتابع مع الإيجنت وبجيبلك رده.";
-const NO_AGENT_LINE =
-  "أنا نداء، وسيطك بينك وبين الإيجنت بتاعك. الإيجنت مش متوصل بالخط دلوقتي، بس كلامك اتسجّلله وأنا هوصّله أول ما يرجع. لو المحادثة بتاعته مقفولة، افتحها وقول له كمّل المتابعة.";
+/**
+ * Attribution is fixed on purpose: the caller must always know WHO answered.
+ * Everything else varies; this prefix is the one stable anchor.
+ */
+const AGENT_FRAME = "رد الإيجنت: ";
 const CALL_ENDED_LINE = "المكالمة اتقفلت. مع السلامة.";
-const NO_NEW_REPLY_LINE = "لسه مفيش رد جديد من الإيجنت.";
+/** Whitespace-only turn: the voice channel stays silent. */
+const SILENCE = " ";
 
-/** Frame a reply so the caller always knows it is the CONNECTED AGENT's answer. */
-function agentFrame(text: string): string {
-  return `رد الإيجنت: ${text}`;
-}
+/** First hold line while the agent works — short, Egyptian, rotated. */
+const HOLD_LINES = [
+  "ثواني، هو شغّال عليه.",
+  "لحظة، بوصّله له.",
+  "هو بيعملها دلوقتي، أول ما يخلص هقولك.",
+  "استنى عليه ثواني بس.",
+];
+/** The user kept talking while the agent works — tiny live acknowledgments. */
+const ACK_LINES = ["تمام.", "أيوة.", "ماشي.", "تمام، هو لسه شغّال."];
+/** Agent not connected — full line once, then short reminders. */
+const NO_AGENT_FIRST =
+  "الإيجنت مش متوصل على الخط دلوقتي. كلامك اتسجلله وهاوصّله أول ما يرجع — لو دردشته مقفولة افتحها وقول له كمّل المتابعة.";
+const NO_AGENT_AGAIN = [
+  "لسه مش متوصل، أول ما يرجع هوصّله.",
+  "هو بره الخط، كلامك محفوظ له.",
+];
+
+const ENDED_STATUSES = ["ended", "missed", "declined", "failed"];
 
 function sseChunk(id: string, model: string, delta: Record<string, unknown>, finish: string | null) {
   return `data: ${JSON.stringify({
@@ -76,6 +98,10 @@ function sseResponse(text: string, model: string) {
       Connection: "keep-alive",
     },
   });
+}
+
+function joinClaimed(events: { text: string | null }[]): string {
+  return events.map((e) => e.text ?? "").filter(Boolean).join("\n\n");
 }
 
 export async function POST(req: NextRequest) {
@@ -120,9 +146,23 @@ export async function POST(req: NextRequest) {
 
   /* ---- case 1: the browser asks us to speak pending agent updates ---- */
   if (lastUserText.trim() === AGENT_UPDATE_MARKER) {
-    const pending = await getPendingAgentUpdates(callId, true);
-    const text = pending.map((e) => e.text ?? "").filter(Boolean).join("\n\n");
-    return sseResponse(text ? agentFrame(text) : NO_NEW_REPLY_LINE, model);
+    const claimed = await claimAgentUpdates(callId);
+    const text = joinClaimed(claimed);
+    if (text) {
+      noteReplySpoken(callId, claimed.map((e) => e.seq));
+      return sseResponse(AGENT_FRAME + text, model);
+    }
+    // Nothing to claim: this injection raced with the in-turn wait loop and
+    // the reply was ALREADY spoken in the previous turn. Stay silent — this
+    // is exactly where the old "لسه مفيش رد جديد من الإيجنت" line made the
+    // call feel dead while the reply was on screen a second earlier.
+    return sseResponse(SILENCE, model);
+  }
+
+  // No user turn at all (e.g. a session warm-up call): the opener is already
+  // speaking from overrides.first_message — nothing to relay yet.
+  if (lastUserIdx === -1) {
+    return sseResponse(SILENCE, model);
   }
 
   /* ---- case 2: a real user utterance (deduped) ---- */
@@ -134,33 +174,57 @@ export async function POST(req: NextRequest) {
       await setCallFields(callId, { last_user_idx: lastUserIdx, last_user_hash: hash });
     }
 
-    // wait for the MCP client (ChatGPT/Claude) to send its reply
+    // Wait for the connected agent (ChatGPT/Claude) to send its reply. The
+    // claim is atomic, so the browser's marker injection and this loop can
+    // never both speak the same update.
+    const st = relayState(callId);
+    const startSpokenSeq = st.lastSpokenSeq;
     const deadline = Date.now() + LLM_BRIDGE_WAIT_MS;
     while (Date.now() < deadline) {
-      const pending = await getPendingAgentUpdates(callId, false);
-      if (pending.length) {
-        await getPendingAgentUpdates(callId, true); // mark spoken
-        const text = pending.map((e) => e.text ?? "").filter(Boolean).join("\n\n");
-        if (text) return sseResponse(agentFrame(text), model);
-        break;
+      const claimed = await claimAgentUpdates(callId);
+      const text = joinClaimed(claimed);
+      if (text) {
+        noteReplySpoken(callId, claimed.map((e) => e.seq));
+        return sseResponse(AGENT_FRAME + text, model);
+      }
+      // The marker turn won the race and just delivered the reply while we
+      // were waiting — go quiet instead of stacking a line on top of it.
+      if (st.lastSpokenSeq !== startSpokenSeq && happenedWithin(st.lastReplyAt, 15_000)) {
+        return sseResponse(SILENCE, model);
       }
       const fresh = await getCall(callId);
-      if (!fresh || ["ended", "missed", "declined", "failed"].includes(fresh.status)) {
+      if (!fresh || ENDED_STATUSES.includes(fresh.status)) {
         return sseResponse(CALL_ENDED_LINE, model);
       }
-      await sleep(300);
+      await sleep(250);
     }
   }
 
   const freshCall = await getCall(callId);
+  if (freshCall && ENDED_STATUSES.includes(freshCall.status)) {
+    return sseResponse(CALL_ENDED_LINE, model);
+  }
+  const st = relayState(callId);
   const following = freshCall ? isAgentFollowing(freshCall) : false;
+
   if (!following) {
-    // Pure relay: never answer the request ourselves. The utterance is already
-    // queued (user_speech event) and reaches the agent when it re-enters the loop.
-    return sseResponse(NO_AGENT_LINE, model);
+    // Pure relay: never answer the request ourselves. The utterance is
+    // already queued (user_speech event) and reaches the agent when it
+    // re-enters the loop. Say it in full once, then keep it short.
+    const line = happenedWithin(st.lastNoAgentAt, 90_000)
+      ? NO_AGENT_AGAIN[st.holds % NO_AGENT_AGAIN.length]
+      : NO_AGENT_FIRST;
+    st.lastNoAgentAt = Date.now();
+    st.holds += 1;
+    return sseResponse(line, model);
   }
 
-  // MCP client is on the call and working, its reply hasn't arrived yet —
-  // the relay keeps following up with it.
-  return sseResponse(HOLD_LINE, model);
+  // The MCP client is on the call and working; its reply hasn't arrived yet.
+  // One natural hold line first, tiny acknowledgments afterwards.
+  const line = happenedWithin(st.lastHoldAt, 45_000)
+    ? ACK_LINES[st.holds % ACK_LINES.length]
+    : HOLD_LINES[st.holds % HOLD_LINES.length];
+  st.lastHoldAt = Date.now();
+  st.holds += 1;
+  return sseResponse(line, model);
 }

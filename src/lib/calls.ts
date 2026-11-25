@@ -3,6 +3,7 @@ import type { InValue } from "@libsql/client";
 import { db, ensureSchema } from "./db";
 import { RING_TIMEOUT_MS, AGENT_HEARTBEAT_MS } from "./env";
 import { broadcastEvent } from "./bus";
+import { forgetRelayState } from "./relay-state";
 
 export type CallStatus = "ringing" | "active" | "ended" | "missed" | "declined" | "failed";
 export type EventKind = "user_speech" | "agent_update" | "system" | "summary";
@@ -180,6 +181,7 @@ export async function endCallInternal(id: string, status: CallStatus, endedBy: s
     sql: "UPDATE calls SET status = ?, ended_at = ?, ended_by = ?, last_activity = ? WHERE id = ? AND status NOT IN ('ended','missed','declined','failed')",
     args: [status, now, endedBy, now, id],
   });
+  forgetRelayState(id);
   await addEvent(id, "system", `انتهت المكالمة (${status}) — بواسطة ${endedBy}`, { status, ended_by: endedBy });
   await broadcastEvent({ type: "call:status", call_id: id, status });
 }
@@ -229,6 +231,25 @@ export async function getPendingAgentUpdates(callId: string, markSpoken = true):
     }
   }
   return events;
+}
+
+/**
+ * Atomically claim the unspoken agent updates for ONE consumer — either the
+ * in-turn wait loop or the browser's marker injection turn. The
+ * UPDATE ... RETURNING makes the claim race-free, so exactly one consumer
+ * speaks each update. Before this, both paths raced: the reply got spoken
+ * once, then the losing path said "لسه مفيش رد جديد من الإيجنت" — the dead
+ * line that made the call feel stuck.
+ */
+export async function claimAgentUpdates(callId: string): Promise<CallEvent[]> {
+  await ensureSchema();
+  const rs = await db.execute({
+    sql: `UPDATE call_events SET spoken = 1
+          WHERE call_id = ? AND kind = 'agent_update' AND spoken = 0
+          RETURNING seq, call_id, kind, text, meta, spoken, created_at`,
+    args: [callId],
+  });
+  return rs.rows.map((r) => toEvent(r as unknown as Record<string, unknown>));
 }
 
 /** wait_for_call_updates long-poll. */

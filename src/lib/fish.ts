@@ -22,16 +22,21 @@ export async function agentId(): Promise<string> {
   return agent_id;
 }
 
-/** Build the spoken opener: the relay introduces itself, then reads the AGENT's reply verbatim. */
+/**
+ * Build the spoken opener: natural live-call opening (no "relay/intermediary"
+ * framing), then reads the AGENT's reply verbatim, then one short line that
+ * sets the live expectation: anything you say reaches the agent, and the
+ * agent's reply is spoken the moment it lands.
+ */
 export function buildFirstMessage(title: string, summary: string): string {
   const clean = summary.replace(/\s+/g, " ").trim();
   const t = title?.trim();
   const head = t ? `مهمة «${t}» خلصت.` : "المهمة خلصت.";
   return (
+    `ألو؟ معاك نداء.\n\n` +
     `${head}\n\n` +
-    `معاك نداء — وسيطك الصوتي بينك وبين الإيجنت بتاعك.\n\n` +
     `رد الإيجنت: ${clean}\n\n` +
-    `لو عندك أي طلب أو عايز تفاصيل، قولي وأنا أوصّله للإيجنت وأرجّعلك رده فورًا وهو شغال عليه.`
+    `اتكلم عادي — أي حاجة تقولها بتوصل للإيجنت فورًا وهو بينفذها معاك، وأول ما يرد أقولك رده هنا.`
   );
 }
 

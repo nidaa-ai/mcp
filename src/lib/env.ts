@@ -32,8 +32,10 @@ export const RING_TIMEOUT_MS = numEnv("RING_TIMEOUT_MS", 60_000);
  * are still spoken via the browser SSE injection, so this only tunes latency.
  */
 export const LLM_BRIDGE_WAIT_MS = numEnv("LLM_BRIDGE_WAIT_MS", 12_000);
-/** Default / max long-poll window for wait_for_call_updates (seconds). */
-export const WAIT_DEFAULT_SECONDS = numEnv("WAIT_DEFAULT_SECONDS", 25);
+/** Default / max long-poll window for wait_for_call_updates (seconds).
+ *  12s keeps the agent's view of the user's speech fresh (~6s average) so
+ *  replies land inside the bridge's speak window and the call feels live. */
+export const WAIT_DEFAULT_SECONDS = numEnv("WAIT_DEFAULT_SECONDS", 12);
 export const WAIT_MAX_SECONDS = numEnv("WAIT_MAX_SECONDS", 55);
 /**
  * Consider the MCP agent "following the call" if it polled within this window (ms).

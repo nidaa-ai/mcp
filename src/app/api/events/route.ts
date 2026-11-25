@@ -22,7 +22,11 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const sinceParam = Number(url.searchParams.get("since") ?? 0) || 0;
   const startSeq = await getMaxSeq();
-  let cursor = Math.max(sinceParam, startSeq);
+  // Fresh connect (no cursor): start from NOW — never replay history.
+  // Reconnect WITH an explicit cursor: honor it EXACTLY. Updates that landed
+  // while the browser was reconnecting must still be delivered — skipping
+  // them here is what left agent replies visible on screen but never spoken.
+  let cursor = sinceParam > 0 ? sinceParam : startSeq;
 
   const encoder = new TextEncoder();
   const state = { closed: false, wake: (() => {}) as () => void };
