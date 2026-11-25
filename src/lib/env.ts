@@ -1,0 +1,21 @@
+export const FISH_API_BASE = process.env.FISH_API_BASE ?? "https://api.fish.audio";
+export const FISH_API_KEY = process.env.FISH_API_KEY ?? "";
+export const FISH_AGENT_ID = process.env.FISH_AGENT_ID ?? "";
+export const FISH_PHONE_NUMBER_ID = process.env.FISH_PHONE_NUMBER_ID ?? "";
+export const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL ?? "";
+export const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN ?? "";
+export const APP_ACCESS_CODE = process.env.APP_ACCESS_CODE ?? "0000";
+export const AGENT_API_KEY_ENV = process.env.AGENT_API_KEY ?? "";
+export const FISH_WEBHOOK_SECRET_ENV = process.env.FISH_WEBHOOK_SECRET ?? "";
+export const VAPID_PUBLIC_KEY_ENV = process.env.VAPID_PUBLIC_KEY ?? "";
+export const VAPID_PRIVATE_KEY_ENV = process.env.VAPID_PRIVATE_KEY ?? "";
+
+/** How long the incoming call rings before it is marked as missed (ms). */
+export const RING_TIMEOUT_MS = 60_000;
+/** How long the custom-LLM bridge waits for the MCP client reply (ms). */
+export const LLM_BRIDGE_WAIT_MS = 8_000;
+/** Default / max long-poll window for wait_for_call_updates (seconds). */
+export const WAIT_DEFAULT_SECONDS = 25;
+export const WAIT_MAX_SECONDS = 55;
+/** Consider the MCP agent "following the call" if it polled within this window (ms). */
+export const AGENT_HEARTBEAT_MS = 90_000;

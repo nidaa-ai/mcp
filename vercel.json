@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/mcp/route.ts": { "maxDuration": 60 },
+    "src/app/api/events/route.ts": { "maxDuration": 60 },
+    "src/app/api/calls/[id]/updates/route.ts": { "maxDuration": 60 },
+    "src/app/api/llm/v1/chat/completions/route.ts": { "maxDuration": 30 },
+    "src/app/api/calls/[id]/answer/route.ts": { "maxDuration": 30 },
+    "src/app/api/calls/[id]/end/route.ts": { "maxDuration": 30 }
+  }
+}

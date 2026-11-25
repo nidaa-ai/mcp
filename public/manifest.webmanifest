@@ -1,0 +1,18 @@
+{
+  "name": "نداء — Nidaa Voice Agent",
+  "short_name": "نداء",
+  "description": "مكالمات صوتية حية بينك وبين الإيجنت — لما المهمة تخلص، الموبايل يرن والتطبيق يتكلم معاك.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#17101f",
+  "theme_color": "#7c3aed",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
