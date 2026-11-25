@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import type { InValue } from "@libsql/client";
 import { db, ensureSchema } from "./db";
-import { RING_TIMEOUT_MS } from "./env";
+import { RING_TIMEOUT_MS, AGENT_HEARTBEAT_MS } from "./env";
 import { broadcastEvent } from "./bus";
 
 export type CallStatus = "ringing" | "active" | "ended" | "missed" | "declined" | "failed";
@@ -88,7 +88,7 @@ export function publicCall(c: CallRow) {
 }
 
 export function isAgentFollowing(c: CallRow): boolean {
-  return !!c.last_agent_poll && Date.now() - c.last_agent_poll < 90_000;
+  return !!c.last_agent_poll && Date.now() - c.last_agent_poll < AGENT_HEARTBEAT_MS;
 }
 
 /* ---------------------------------------------------------------- calls ---- */

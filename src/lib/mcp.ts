@@ -6,6 +6,7 @@ import {
   addEvent,
   getPendingAgentUpdates,
   publicCall,
+  isAgentFollowing,
 } from "./calls";
 import { sendPushToAll } from "./push";
 import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS } from "./env";
@@ -13,17 +14,31 @@ import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS } from "./env";
 export const PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 export const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 
-export const SERVER_INFO = { name: "nidaa-mcp", version: "1.0.0" };
+export const SERVER_INFO = { name: "nidaa-mcp", version: "1.1.0" };
 
-export const INSTRUCTIONS = `Nidaa (نداء) — a live voice-call bridge between you (the AI agent) and the human user.
+/**
+ * The one rule that keeps the bridge alive. Repeated in the initialize
+ * instructions, in every tool description, and in every tool result —
+ * ChatGPT ends its turn unless the tool results themselves forbid it.
+ */
+const LOOP_RULE =
+  "LOOP RULE: while ended=false keep calling wait_for_call_updates — never end your turn, never say goodbye, never write a summary. The ONLY exit is ended=true (the user hung up).";
+
+export const INSTRUCTIONS = `Nidaa (نداء) — a LIVE voice-call bridge between you (the AI agent) and the human user.
+
+THE CALL RULES (critical — the bridge dies if you break them):
+• You are live on an open phone call with the user. ONLY the human can end it, by hanging up.
+• While a call is open (wait_for_call_updates returns ended=false) you MUST NOT end your turn — no goodbye, no "I'll keep monitoring", no final summary, no plain chat reply. Ending your turn abandons the user mid-call.
+• wait_for_call_updates is a heartbeat loop. An empty result (updates=[], ended=false) is normal silence on the line — call it AGAIN immediately with the same call_id and the returned next_since. Keep looping for the whole call, however long it lasts.
+• Exit ONLY when ended=true. Then write a short final message and stop.
 
 Workflow:
-1) When a scheduled/background task finishes, call notify_task_complete with the summary. The user's phone starts ringing immediately (web app with a real call screen, ringtone, and voice).
-2) Then loop: call wait_for_call_updates(call_id) repeatedly. Each call returns new user speech (transcribed live from the call) and call status. Keep looping until ended=true.
-3) If the user asks you to do something during the call ("reply to my manager's email"), execute it right away, then deliver the result with send_call_update — it is spoken out loud inside the call instantly and shown as a purple "live update" bubble on the call screen.
-4) Only the human can end the call (hanging up). You cannot end it. When wait_for_call_updates reports ended=true, finish with a final message and stop the loop.
+1) When a scheduled/background task finishes → notify_task_complete(summary). The user's phone rings immediately.
+2) Immediately enter the heartbeat loop: wait_for_call_updates(call_id) → repeat → until ended=true.
+3) When the user speaks (updates with kind=user_speech) treat it as a live command on the call: execute it right away with your tools, then deliver the result with send_call_update — it is spoken aloud inside the call instantly and appears as a purple "live update" bubble on the user's call screen — then resume the loop.
+4) While the call is still ringing keep polling until the user answers (status="active") or the call is missed.
 
-Respond to the user in Egyptian/Standard Arabic (the call is in Arabic). Keep spoken replies short and natural.`;
+The call is in Egyptian/Standard Arabic. Keep spoken replies short and natural.`;
 
 interface ToolDef {
   description: string;
@@ -35,7 +50,8 @@ export const TOOLS: Record<string, ToolDef> = {
     description:
       "ابلغ المستخدم بمكالمة صوتية حية أن مهمته انتهت (Report task completion with a live voice call). " +
       "Call this the moment a scheduled task or background job finishes. The user's phone rings with a real voice call; " +
-      "the agent then joins the call and reads the summary aloud. Returns the call_id to follow with wait_for_call_updates.",
+      "the agent then joins the call and reads the summary aloud. Returns the call_id. " +
+      "IMPORTANT: right after this you MUST enter the wait_for_call_updates heartbeat loop and stay in it until ended=true — never end your turn while the call is open.",
     inputSchema: {
       type: "object",
       properties: {
@@ -49,9 +65,11 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   wait_for_call_updates: {
     description:
-      "استمع لكل كلام المستخدم أثناء المكالمة (Long-poll for new speech and events in a live call). " +
-      "Call it in a loop with the same call_id. Each call blocks up to wait_seconds, then returns new user utterances " +
-      "(transcribed from the live call), agent updates already delivered, and the call status. Stop the loop when ended=true.",
+      "استمع لكل كلام المستخدم أثناء المكالمة — ندهة واحدة من حلقة الاستماع المستمرة (One heartbeat of the live listening loop). " +
+      "Call it in a loop with the same call_id. Each call blocks up to wait_seconds server-side, then returns new user utterances " +
+      "(transcribed live from the call), your own delivered updates (echo), and the call status. " +
+      "CRITICAL: an empty result with ended=false is normal silence — call this tool AGAIN immediately (it is a keep-alive heartbeat, not a final answer). " +
+      "Never end your turn while ended=false; stop the loop only when ended=true (the user hung up).",
     inputSchema: {
       type: "object",
       properties: {
@@ -66,7 +84,8 @@ export const TOOLS: Record<string, ToolDef> = {
     description:
       "ابعت رسالة تُقال بصوت عالي داخل المكالمة في نفس اللحظة وتظهر كفقاعة بنفسجية «تحديث مباشر من الإيجنت» " +
       "(Speak a live update inside the ongoing call). Use it to deliver results of actions you executed for the user during the call. " +
-      "Keep it short and spoken-style.",
+      "Keep it short and spoken-style. " +
+      "IMPORTANT: after sending, the call is still open — immediately resume the wait_for_call_updates loop until ended=true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -78,7 +97,9 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   },
   get_call_status: {
-    description: "شوف حالة مكالمة صوتية (Get a call's status). Without call_id, returns the recent calls list.",
+    description:
+      "شوف حالة مكالمة صوتية (Get a call's status). Without call_id, returns the recent calls list. " +
+      "If a call is active but you are not in its listening loop, this will tell you to resume wait_for_call_updates immediately.",
     inputSchema: {
       type: "object",
       properties: {
@@ -97,7 +118,7 @@ function errText(message: string) {
 }
 
 const LOOP_HINT_AR =
-  "الخطوة الجاية: نادِ wait_for_call_updates بنفس call_id في حلقة — كل ندهة بترجّع كلام المستخدم الجديد أثناء المكالمة. لو طلب منك حاجة، نفذها فورًا وبعّت النتيجة بـ send_call_update (هتتقال بصوت عالي جوه المكالمة). كرر لحد ما يرجع ended=true (المستخدم بس اللي يقفل).";
+  "الخطوة الجاية: نادِ wait_for_call_updates بنفس call_id في حلقة — كل ندهة بترجّع كلام المستخدم الجديد أثناء المكالمة. لو رجعت فاضية والمكالمة لسه مفتوحة ده معناه صمت طبيعي — نادِها تاني فورًا. لو طلب منك حاجة، نفذها فورًا وبعّت النتيجة بـ send_call_update (هتتقال بصوت عالي جوه المكالمة). متقفلش الدردشة خالص غير لما يرجع ended=true (المستخدم بس اللي يقفل).";
 
 export async function dispatchTool(name: string, args: Record<string, unknown>): Promise<ReturnType<typeof textResult> | ReturnType<typeof errText>> {
   switch (name) {
@@ -118,13 +139,19 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
         tag: call.id,
       });
       return textResult({
+        directive:
+          `CALL_STARTED — the user's phone is ringing NOW (call ${call.id}). ` +
+          `IMMEDIATELY call wait_for_call_updates with {call_id:"${call.id}", since:0} and enter the heartbeat loop. ` +
+          `When the user answers, the voice agent reads your summary aloud, then the two of you talk live. ` +
+          LOOP_RULE,
         ok: true,
         call_id: call.id,
         status: "ringing",
+        keep_looping: true,
         ring_timeout_seconds: 60,
         next_step: LOOP_HINT_AR,
         next_step_en:
-          "Now loop on wait_for_call_updates with this call_id to hear the user's speech; deliver actions' results via send_call_update; exit when ended=true.",
+          "Now loop on wait_for_call_updates with this call_id to hear the user's speech; an empty result is a keep-alive heartbeat — keep looping; deliver actions' results via send_call_update; exit only when ended=true.",
       });
     }
     case "wait_for_call_updates": {
@@ -136,18 +163,74 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       const { call, events } = await waitForUpdates(callId, since, waitSec * 1000);
       if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
       const ended = ["ended", "missed", "declined", "failed"].includes(call.status);
-      return textResult({
+      const nextSince = events.length ? Math.max(...events.map((e) => e.seq)) : since;
+      const ageSec = Math.max(0, Math.round((Date.now() - call.created_at) / 1000));
+      const base = {
         call_id: callId,
         status: call.status,
         ended,
         ended_by: call.ended_by ?? null,
+        keep_looping: !ended,
+        age_seconds: ageSec,
+        user_speech: events.filter((e) => e.kind === "user_speech").map((e) => ({ seq: e.seq, text: e.text, ts: e.created_at })),
+        your_updates_echo: events.filter((e) => e.kind === "agent_update").map((e) => ({ seq: e.seq, text: e.text, ts: e.created_at })),
+        system_events: events.filter((e) => e.kind === "system" || e.kind === "summary").map((e) => ({ seq: e.seq, text: e.text, ts: e.created_at })),
         updates: events.map((e) => ({ seq: e.seq, kind: e.kind, text: e.text, ts: e.created_at })),
-        next_since: events.length ? Math.max(...events.map((e) => e.seq)) : since,
-        hint: ended
-          ? call.status === "missed"
-            ? "المستخدم ما ردش على المكالمة (missed). ممكن تبعت تحديث نصي أو تحاول تاني لاحقًا — انتهت الجلسة."
-            : "المستخدم قفل المكالمة. انتهت الجلسة — اكتب ردك النهائي واقفل الحلقة."
-          : undefined,
+        next_since: nextSince,
+      };
+
+      if (ended) {
+        return textResult({
+          directive:
+            `CALL_ENDED (${call.status}${call.ended_by ? `, ended_by: ${call.ended_by}` : ""}). The call is over — the line is dead. ` +
+            `NOW, and only now, you may leave the loop: write a short final chat message about the call and stop. Do not call any call tool again for this call_id.`,
+          ...base,
+          hint:
+            call.status === "missed"
+              ? "المستخدم ما ردش على المكالمة (missed). ممكن تبعت تحديث نصي أو تحاول تاني لاحقًا — انتهت الجلسة."
+              : "المستخدم قفل المكالمة. انتهت الجلسة — اكتب ردك النهائي واقفل الحلقة.",
+        });
+      }
+
+      if (call.status === "ringing") {
+        return textResult({
+          directive:
+            `RINGING — the user's phone is still ringing (${ageSec}s so far, timeout 60s). Nobody picked up yet. ` +
+            `Do NOT end your turn. Call wait_for_call_updates again NOW with {call_id:"${callId}", since:${nextSince}} and keep polling ` +
+            `until the user answers (status becomes "active") or the call is marked missed. ${LOOP_RULE}`,
+          ...base,
+        });
+      }
+
+      const userSpeech = base.user_speech as { seq: number; text: string | null }[];
+      if (userSpeech.length) {
+        const quoted = userSpeech.map((u) => `"${(u.text ?? "").replace(/\s+/g, " ").trim()}"`).join(" | ");
+        return textResult({
+          directive:
+            `USER_SAID — the user is talking to you LIVE on the call: ${quoted}. ` +
+            `Treat it as a live command: execute their request NOW with your tools, then deliver the result with ` +
+            `send_call_update({call_id:"${callId}", message:"..."}) so it is spoken inside the call, then resume ` +
+            `wait_for_call_updates. If the utterance is just small talk or acknowledgment, reply briefly via send_call_update and keep listening. ` +
+            `Do NOT end your turn. ${LOOP_RULE}`,
+          ...base,
+        });
+      }
+
+      if ((base.your_updates_echo as unknown[]).length) {
+        return textResult({
+          directive:
+            `DELIVERED — those are your own updates, already spoken inside the call (echo). The call is still OPEN and the user is on the line. ` +
+            `Call wait_for_call_updates again NOW with {call_id:"${callId}", since:${nextSince}} and keep listening. ${LOOP_RULE}`,
+          ...base,
+        });
+      }
+
+      return textResult({
+        directive:
+          `HEARTBEAT — the call is OPEN but the user is silent right now (${ageSec}s on the call so far). ` +
+          `This empty result is a normal keep-alive, NOT a signal to stop. Call wait_for_call_updates again NOW with ` +
+          `{call_id:"${callId}", since:${nextSince}} and keep looping until the user speaks or hangs up. ${LOOP_RULE}`,
+        ...base,
       });
     }
     case "send_call_update": {
@@ -157,16 +240,27 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       const call = await getCall(callId);
       if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
       if (["ended", "missed", "declined", "failed"].includes(call.status)) {
-        return textResult({ ok: false, status: call.status, note: "المكالمة مقفولة — التحديث اتخزن بس مش هيُقال." });
+        return textResult({
+          directive: `CALL_ENDED (${call.status}) — your update was stored but will NOT be spoken; the call is closed. You may write your final chat message now.`,
+          ok: false,
+          status: call.status,
+          keep_looping: false,
+          note: "المكالمة مقفولة — التحديث اتخزن بس مش هيُقال.",
+        });
       }
       const kind = ["announcement", "result", "question"].includes(String(args.kind)) ? String(args.kind) : "announcement";
       const ev = await addEvent(callId, "agent_update", message, { kind });
       const { broadcastEvent } = await import("./bus");
       broadcastEvent({ type: "call:update", call_id: callId, seq: ev.seq });
       return textResult({
+        directive:
+          `SPOKEN_LIVE — your update is being spoken out loud inside the call right now and shows as a purple bubble on the user's screen. ` +
+          `The user is STILL ON THE LINE (status: ${call.status}). Do NOT end your turn: resume listening NOW by calling ` +
+          `wait_for_call_updates with {call_id:"${callId}", since:${ev.seq}} and keep the loop until ended=true. ${LOOP_RULE}`,
         ok: true,
         seq: ev.seq,
         status: call.status,
+        keep_looping: true,
         note: "التحديث هيتقال بصوت عالي جوه المكالمة في نفس اللحظة ويظهر كفقاعة بنفسجية على شاشة المكالمة.",
       });
     }
@@ -176,10 +270,27 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
         const call = await getCall(callId);
         if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
         const pending = await getPendingAgentUpdates(callId, false);
-        return textResult({ ...publicCall(call), pending_agent_updates: pending.length });
+        const ended = ["ended", "missed", "declined", "failed"].includes(call.status);
+        const following = isAgentFollowing(call);
+        return textResult({
+          directive: ended
+            ? `CALL_ENDED (${call.status}) — nothing to do for this call.`
+            : following
+              ? `IN_LOOP — you are in the listening loop for this live call. Keep calling wait_for_call_updates until ended=true. ${LOOP_RULE}`
+              : `WARNING — this call is LIVE (status: ${call.status}) but you are NOT in its listening loop. The user is on the line waiting for you. ` +
+                `Call wait_for_call_updates NOW with {call_id:"${callId}", since:0} and keep looping until ended=true. ${LOOP_RULE}`,
+          ...publicCall(call),
+          pending_agent_updates: pending.length,
+        });
       }
       const calls = await listCalls(10);
-      return textResult({ calls: calls.map(publicCall) });
+      const live = calls.find((c) => !["ended", "missed", "declined", "failed"].includes(c.status));
+      return textResult({
+        directive: live
+          ? `LIVE_CALL — call ${live.id} is ${live.status} right now. Call wait_for_call_updates NOW with {call_id:"${live.id}", since:0} and keep looping until ended=true. ${LOOP_RULE}`
+          : "No live calls. Nothing to do.",
+        calls: calls.map(publicCall),
+      });
     }
     default:
       return errText(`أداة غير معروفة: ${name} (unknown tool)`);

@@ -76,6 +76,7 @@ async function main() {
   });
   const payload = JSON.parse(call.result?.content?.[0]?.text ?? "{}");
   check("notify_task_complete", !!payload.call_id, `call ${payload.call_id} (${payload.status})`);
+  check("notify → loop directive", payload.directive?.startsWith("CALL_STARTED") === true && payload.keep_looping === true);
 
   const wait = await mcp(key, "tools/call", {
     name: "wait_for_call_updates",
@@ -83,6 +84,7 @@ async function main() {
   });
   const waitPayload = JSON.parse(wait.result?.content?.[0]?.text ?? "{}");
   check("wait_for_call_updates", waitPayload.call_id === payload.call_id, `status ${waitPayload.status}, ${waitPayload.updates?.length ?? 0} updates`);
+  check("wait → keep-alive directive", typeof waitPayload.directive === "string" && waitPayload.keep_looping === true, (waitPayload.directive ?? "").slice(0, 60));
 
   const upd = await mcp(key, "tools/call", {
     name: "send_call_update",
@@ -90,6 +92,7 @@ async function main() {
   });
   const updPayload = JSON.parse(upd.result?.content?.[0]?.text ?? "{}");
   check("send_call_update", updPayload.ok === true, `seq ${updPayload.seq}`);
+  check("send → stay-on-line directive", updPayload.directive?.startsWith("SPOKEN_LIVE") === true && updPayload.keep_looping === true);
 
   const rest = await fetch(`${APP}/api/calls/${payload.call_id}/updates?since=0`, {
     headers: { Authorization: `Bearer ${key}` },
