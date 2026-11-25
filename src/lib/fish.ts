@@ -22,12 +22,17 @@ export async function agentId(): Promise<string> {
   return agent_id;
 }
 
-/** Build the spoken opener for a call: the agent reads the task summary first. */
+/** Build the spoken opener: the relay introduces itself, then reads the AGENT's reply verbatim. */
 export function buildFirstMessage(title: string, summary: string): string {
   const clean = summary.replace(/\s+/g, " ").trim();
   const t = title?.trim();
   const head = t ? `مهمة «${t}» خلصت.` : "المهمة خلصت.";
-  return `${head}\n\n${clean}\n\nده ملخص اللي حصل. لو عايز تفاصيل أكتر أو عندك أي طلب، قولي وأنا معاك.`;
+  return (
+    `${head}\n\n` +
+    `معاك نداء — وسيطك الصوتي بينك وبين الإيجنت بتاعك.\n\n` +
+    `رد الإيجنت: ${clean}\n\n` +
+    `لو عندك أي طلب أو عايز تفاصيل، قولي وأنا أوصّله للإيجنت وأرجّعلك رده فورًا وهو شغال عليه.`
+  );
 }
 
 export interface FishSessionResponse {

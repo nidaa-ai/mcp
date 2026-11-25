@@ -13,17 +13,29 @@ export const maxDuration = 30;
  * OpenAI-compatible chat-completions endpoint that Fish Audio's Voice Agent
  * (custom LLM) calls on every conversation turn.
  *
- * It bridges the voice call with the MCP client (ChatGPT/Claude):
- *  - logs each user utterance so wait_for_call_updates returns it,
- *  - waits briefly for the MCP client's send_call_update reply and streams it
- *    back so the agent speaks it inside the call,
+ * Pure RELAY (وسيط) between the human on the call and the MCP client
+ * (ChatGPT/Claude) — this endpoint NEVER answers requests by itself:
+ *  - logs each user utterance so wait_for_call_updates returns it to the agent,
+ *  - waits for the agent's send_call_update reply and speaks it, framed as
+ *    "رد الإيجنت: ..." so it is always clear WHO answered,
+ *  - while the agent is still working it says it is following up with them,
+ *  - if the agent is not connected to the call it says so (and the speech is
+ *    already queued for the agent to pick up when it returns),
  *  - handles the browser's "__NDAA_AGENT_UPDATE__" injection turn that makes
  *    late agent updates audible immediately.
  */
 export const AGENT_UPDATE_MARKER = "__NDAA_AGENT_UPDATE__";
 
-const HOLD_LINE = "ثانية واحدة، بجهّز الرد.";
-const NO_AGENT_LINE = "الإيجنت مش متوصل بالجلسة حاليًا. افتح الجلسة من عندك وقولي تاني.";
+const HOLD_LINE = "ثانية واحدة، بتابع مع الإيجنت وبجيبلك رده.";
+const NO_AGENT_LINE =
+  "أنا نداء، وسيطك بينك وبين الإيجنت بتاعك. الإيجنت مش متوصل بالخط دلوقتي، بس كلامك اتسجّلله وأنا هوصّله أول ما يرجع. لو المحادثة بتاعته مقفولة، افتحها وقول له كمّل المتابعة.";
+const CALL_ENDED_LINE = "المكالمة اتقفلت. مع السلامة.";
+const NO_NEW_REPLY_LINE = "لسه مفيش رد جديد من الإيجنت.";
+
+/** Frame a reply so the caller always knows it is the CONNECTED AGENT's answer. */
+function agentFrame(text: string): string {
+  return `رد الإيجنت: ${text}`;
+}
 
 function sseChunk(id: string, model: string, delta: Record<string, unknown>, finish: string | null) {
   return `data: ${JSON.stringify({
@@ -110,7 +122,7 @@ export async function POST(req: NextRequest) {
   if (lastUserText.trim() === AGENT_UPDATE_MARKER) {
     const pending = await getPendingAgentUpdates(callId, true);
     const text = pending.map((e) => e.text ?? "").filter(Boolean).join("\n\n");
-    return sseResponse(text || "تمام.", model);
+    return sseResponse(text ? agentFrame(text) : NO_NEW_REPLY_LINE, model);
   }
 
   /* ---- case 2: a real user utterance (deduped) ---- */
@@ -122,19 +134,19 @@ export async function POST(req: NextRequest) {
       await setCallFields(callId, { last_user_idx: lastUserIdx, last_user_hash: hash });
     }
 
-    // wait briefly for the MCP client (ChatGPT/Claude) to send its reply
+    // wait for the MCP client (ChatGPT/Claude) to send its reply
     const deadline = Date.now() + LLM_BRIDGE_WAIT_MS;
     while (Date.now() < deadline) {
       const pending = await getPendingAgentUpdates(callId, false);
       if (pending.length) {
         await getPendingAgentUpdates(callId, true); // mark spoken
         const text = pending.map((e) => e.text ?? "").filter(Boolean).join("\n\n");
-        if (text) return sseResponse(text, model);
+        if (text) return sseResponse(agentFrame(text), model);
         break;
       }
       const fresh = await getCall(callId);
       if (!fresh || ["ended", "missed", "declined", "failed"].includes(fresh.status)) {
-        return sseResponse("المكالمة اتقفلت. مع السلامة.", model);
+        return sseResponse(CALL_ENDED_LINE, model);
       }
       await sleep(300);
     }
@@ -143,10 +155,12 @@ export async function POST(req: NextRequest) {
   const freshCall = await getCall(callId);
   const following = freshCall ? isAgentFollowing(freshCall) : false;
   if (!following) {
-    // No MCP client is in the loop → let the platform fallback model answer.
-    return Response.json({ error: "mcp client not following the call", call_id: callId }, { status: 503 });
+    // Pure relay: never answer the request ourselves. The utterance is already
+    // queued (user_speech event) and reaches the agent when it re-enters the loop.
+    return sseResponse(NO_AGENT_LINE, model);
   }
 
-  // MCP client is on the call but its reply hasn't arrived yet → short hold line.
+  // MCP client is on the call and working, its reply hasn't arrived yet —
+  // the relay keeps following up with it.
   return sseResponse(HOLD_LINE, model);
 }

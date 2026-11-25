@@ -39,6 +39,8 @@ While the call is open, the user's speech is a live command stream — you are t
  • "خلّص التقرير ده وابعتهولي" → produce it now, then tell them it's done.
 Never say "سأفعلها لاحقًا" (I'll do it later) — you are live together on the call: act now, answer by voice, then keep listening. Only small talk needs no tools — just answer briefly via send_call_update.
 
+WHO SPEAKS: the voice on the phone is "نداء", a RELAY between the user and YOU (the connected agent). It never answers requests itself — every reply the user hears is YOUR send_call_update, announced as "رد الإيجنت: ...". So write your updates in first person as your own spoken answer ("بعت الإيميل خلاص"), and if the user asks "who am I talking to?" — the answer is: your agent, relayed by نداء. If the user hangs up before you finish, send the result anyway: it is stored and pushed to their phone as a late reply.
+
 Workflow:
 1) When a scheduled/background task finishes → notify_task_complete(summary). The user's phone rings immediately.
 2) Immediately enter the heartbeat loop: wait_for_call_updates(call_id) → repeat → until ended=true.
@@ -91,9 +93,10 @@ export const TOOLS: Record<string, ToolDef> = {
   send_call_update: {
     description:
       "ابعت رسالة تُقال بصوت عالي داخل المكالمة في نفس اللحظة وتظهر كفقاعة بنفسجية «تحديث مباشر من الإيجنت» " +
-      "(Speak a live update inside the ongoing call). Use it to deliver results of actions you executed for the user during the call. " +
-      "Keep it short and spoken-style. " +
-      "IMPORTANT: after sending, the call is still open — immediately resume the wait_for_call_updates loop until ended=true.",
+      "(Speak a live update inside the ongoing call). The voice on the phone is a RELAY — your message is announced as \"رد الإيجنت: ...\" so the user always knows it is YOUR answer. " +
+      "Use it to deliver results of actions you executed for the user during the call. Keep it short and spoken-style, first person. " +
+      "IMPORTANT: after sending, the call is still open — immediately resume the wait_for_call_updates loop until ended=true. " +
+      "If the call already ended, still send it: the reply is stored and pushed to the user's phone as a late reply.",
     inputSchema: {
       type: "object",
       properties: {
@@ -249,12 +252,22 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       const call = await getCall(callId);
       if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
       if (["ended", "missed", "declined", "failed"].includes(call.status)) {
+        await sendPushToAll({
+          call_id: callId,
+          title: "رد الإيجنت وصل بعد ما قفلت",
+          body: message.slice(0, 160),
+          tag: callId,
+        });
         return textResult({
-          directive: `CALL_ENDED (${call.status}) — your update was stored but will NOT be spoken; the call is closed. You may write your final chat message now.`,
+          directive:
+            `LATE_REPLY — the user already hung up (${call.status}), so your reply will NOT be spoken inside the call. ` +
+            `It was stored and PUSHED to their phone as a notification instead. Nothing more to do for this call — you may end your turn now.`,
           ok: false,
+          stored: true,
+          pushed: true,
           status: call.status,
           keep_looping: false,
-          note: "المكالمة مقفولة — التحديث اتخزن بس مش هيُقال.",
+          note: "المكالمة مقفولة — الرد اتخزن واتبعت إشعار على موبايل المستخدم.",
         });
       }
       const kind = ["announcement", "result", "question"].includes(String(args.kind)) ? String(args.kind) : "announcement";
@@ -263,14 +276,14 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       broadcastEvent({ type: "call:update", call_id: callId, seq: ev.seq });
       return textResult({
         directive:
-          `SPOKEN_LIVE — your update is being spoken out loud inside the call right now and shows as a purple bubble on the user's screen. ` +
+          `SPOKEN_LIVE — your update is being spoken out loud inside the call right now, announced as "رد الإيجنت" (the relay), and shows as a purple bubble on the user's screen. ` +
           `The user is STILL ON THE LINE (status: ${call.status}). Do NOT end your turn: resume listening NOW by calling ` +
           `wait_for_call_updates with {call_id:"${callId}", since:${ev.seq}} and keep the loop until ended=true. ${LOOP_RULE}`,
         ok: true,
         seq: ev.seq,
         status: call.status,
         keep_looping: true,
-        note: "التحديث هيتقال بصوت عالي جوه المكالمة في نفس اللحظة ويظهر كفقاعة بنفسجية على شاشة المكالمة.",
+        note: "التحديث هيتقال بصوت عالي جوه المكالمة فورًا بصيغة «رد الإيجنت» ويظهر كفقاعة بنفسجية على شاشة المكالمة.",
       });
     }
     case "get_call_status": {

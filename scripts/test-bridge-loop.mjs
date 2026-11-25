@@ -155,9 +155,49 @@ async function main() {
   const llm = await llmPromise;
   const spoken = sseText(llm.text);
   check(
-    "LLM bridge spoke the agent reply instantly",
-    llm.ok && spoken.includes("فاتورة الكهربا اتدفعت"),
-    `status ${llm.status}, spoken: ${spoken.slice(0, 40)}`,
+    "LLM bridge speaks the reply ATTRIBUTED to the agent",
+    llm.ok && spoken.includes("رد الإيجنت") && spoken.includes("فاتورة الكهربا اتدفعت"),
+    `status ${llm.status}, spoken: ${spoken.slice(0, 50)}`,
+  );
+
+  /* 6b — marker turn with nothing pending → honest relay line (not 'تمام') */
+  const marker = await fetch(`${APP}/api/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "bridge-test",
+      stream: true,
+      messages: [{ role: "user", content: "__NDAA_AGENT_UPDATE__" }],
+      fishaudio_extra_body: { call_id: callId },
+    }),
+  }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
+  const markerSpoken = sseText(marker.text);
+  check(
+    "marker (nothing pending) → 'لسه مفيش رد جديد من الإيجنت'",
+    marker.ok && markerSpoken.includes("لسه مفيش رد جديد"),
+    markerSpoken.slice(0, 40),
+  );
+
+  /* 6c — agent loop broken → pure relay line, NEVER self-answering (no 503 fallback) */
+  await db.execute({
+    sql: "UPDATE calls SET last_agent_poll = ? WHERE id = ?",
+    args: [Date.now() - 300_000, callId],
+  });
+  const noAgent = await fetch(`${APP}/api/llm/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "bridge-test",
+      stream: true,
+      messages: [{ role: "user", content: "فاتورة الكهربا اتدفعت النهاردة؟" }],
+      fishaudio_extra_body: { call_id: callId },
+    }),
+  }).then(async (r) => ({ ok: r.ok, status: r.status, text: await r.text() }));
+  const noAgentSpoken = sseText(noAgent.text);
+  check(
+    "agent not connected → relay says so (queue kept, no self-answer)",
+    noAgent.ok && noAgent.status === 200 && noAgentSpoken.includes("وسيطك") && noAgentSpoken.includes("مش متوصل"),
+    noAgentSpoken.slice(0, 50),
   );
 
   /* 7 — next poll: the user utterance must arrive as USER_SAID */
@@ -213,6 +253,18 @@ async function main() {
     "wait after hangup → CALL_ENDED (exit allowed)",
     p4.directive?.startsWith("CALL_ENDED") && p4.ended === true && p4.keep_looping === false,
     `ended_by ${p4.ended_by}`,
+  );
+
+  /* 12 — late reply after hangup → stored + pushed to the user's phone */
+  const late = await mcp(key, "tools/call", {
+    name: "send_call_update",
+    arguments: { call_id: callId, message: "اختبار: رد الإيجنت وصل بعد القفل." },
+  });
+  const lp = payloadOf(late);
+  check(
+    "late reply after hangup → stored + pushed",
+    lp.directive?.startsWith("LATE_REPLY") && lp.pushed === true && lp.keep_looping === false,
+    `status ${lp.status}`,
   );
 
   /* cleanup — leave no test rows behind */
