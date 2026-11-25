@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import {
   PhoneCall, BellRing, Download, Plug, Copy, Check,
-  MessageSquare, Bot, Clock, Signal, KeyRound, Phone,
+  MessageSquare, Bot, Clock, Signal, LogOut, Phone,
 } from "lucide-react";
 import type { AppConfig } from "./types";
 
@@ -117,8 +117,8 @@ export function Home({
             <Button variant="ghost" size="icon" className="text-violet-200/70 hover:bg-violet-500/20" onClick={onRefresh} aria-label="تحديث">
               <Signal className="h-5 w-5" aria-hidden />
             </Button>
-            <Button variant="ghost" size="icon" className="text-violet-200/70 hover:bg-violet-500/20" onClick={onLogout} aria-label="خروج">
-              <KeyRound className="h-5 w-5" aria-hidden />
+            <Button variant="ghost" size="icon" className="text-violet-200/70 hover:bg-violet-500/20" onClick={onLogout} aria-label="تسجيل خروج">
+              <LogOut className="h-5 w-5" aria-hidden />
             </Button>
           </div>
         </header>
@@ -134,8 +134,8 @@ export function Home({
                 </span>
                 <span className="text-violet-100/90">الجهاز متصل ومستني مكالمات</span>
               </div>
-              {config.access_code_default && (
-                <Badge className="bg-amber-500/15 text-amber-300 border-amber-400/30 hover:bg-amber-500/15">كود افتراضي!</Badge>
+              {config.user_email && (
+                <span dir="ltr" className="text-[11px] text-violet-200/60 truncate max-w-[180px]">{config.user_email}</span>
               )}
             </div>
 

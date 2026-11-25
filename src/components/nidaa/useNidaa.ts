@@ -17,8 +17,8 @@ export type Phase = "loading" | "gate" | "ready";
 export function useNidaa() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [pairing, setPairing] = useState(false);
-  const [pairError, setPairError] = useState<string | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [incoming, setIncoming] = useState<{ id: string; title: string; summary: string; at: number } | null>(null);
   const [active, setActive] = useState<ActiveCall | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
@@ -38,7 +38,7 @@ export function useNidaa() {
     setTimeout(() => setToast((t) => (t === msg ? null : t)), 4000);
   }, []);
 
-  /* ---------------------------------------------------------- pairing ---- */
+  /* -------------------------------------------------------- sign-in ---- */
 
   const loadConfig = useCallback(async (token: string) => {
     try {
@@ -59,27 +59,28 @@ export function useNidaa() {
     }
   }, []);
 
-  const pair = useCallback(async (code: string) => {
-    setPairing(true);
-    setPairError(null);
+  /** Direct sign-in: email only, no password, no access code. */
+  const login = useCallback(async (email: string) => {
+    setLoginBusy(true);
+    setLoginError(null);
     try {
       const res = await fetch("/api/device", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, label: navigator.userAgent.slice(0, 90) }),
+        body: JSON.stringify({ email, label: navigator.userAgent.slice(0, 90) }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? "فشل الدخول");
+        throw new Error(body.error ?? "فشل تسجيل الدخول");
       }
       const { device_token } = (await res.json()) as { device_token: string };
       localStorage.setItem(TOKEN_KEY, device_token);
       tokenRef.current = device_token;
       await loadConfig(device_token);
     } catch (err) {
-      setPairError((err as Error).message);
+      setLoginError((err as Error).message);
     } finally {
-      setPairing(false);
+      setLoginBusy(false);
     }
   }, [loadConfig]);
 
@@ -392,8 +393,8 @@ export function useNidaa() {
   }, [showToast, loadConfig]);
 
   return {
-    phase, config, pairing, pairError,
-    pair, logout, refresh, loadConfig,
+    phase, config, loginBusy, loginError,
+    login, logout, refresh, loadConfig,
     incoming, active, bubbles, toast, showToast,
     accept, decline, hangup, toggleMute, closeEnded,
     pushEnabled, enablePush, linkFish,

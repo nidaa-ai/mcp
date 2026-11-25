@@ -15,7 +15,7 @@ export interface AppConfigCall {
 export interface AppConfig {
   origin: string;
   agent_api_key: string;
-  access_code_default: boolean;
+  user_email: string | null;
   vapid_public_key: string | null;
   fish_agent: { configured: boolean; name?: string; status?: string; publication_state?: string };
   recent_calls?: AppConfigCall[];

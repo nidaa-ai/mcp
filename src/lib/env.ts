@@ -4,7 +4,12 @@ export const FISH_AGENT_ID = process.env.FISH_AGENT_ID ?? "";
 export const FISH_PHONE_NUMBER_ID = process.env.FISH_PHONE_NUMBER_ID ?? "";
 export const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL ?? "";
 export const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN ?? "";
-export const APP_ACCESS_CODE = process.env.APP_ACCESS_CODE ?? "0000";
+/**
+ * Optional comma-separated whitelist of emails allowed to sign in.
+ * Empty (default) = anyone with the link can sign in directly.
+ * Example: NIDAA_ALLOWED_EMAILS="me@example.com,wife@example.com"
+ */
+export const NIDAA_ALLOWED_EMAILS = process.env.NIDAA_ALLOWED_EMAILS ?? "";
 export const AGENT_API_KEY_ENV = process.env.AGENT_API_KEY ?? "";
 export const FISH_WEBHOOK_SECRET_ENV = process.env.FISH_WEBHOOK_SECRET ?? "";
 export const VAPID_PUBLIC_KEY_ENV = process.env.VAPID_PUBLIC_KEY ?? "";

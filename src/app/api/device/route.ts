@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { accessCodeMatches, randomToken, isValidDevice } from "@/lib/auth";
+import { normalizeLoginEmail, emailAllowed, randomToken, isValidDevice } from "@/lib/auth";
 import { db, ensureSchema } from "@/lib/db";
 import { getVapidKeys } from "@/lib/settings";
 
@@ -7,9 +7,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * POST /api/device — pair the web app with the access code.
- * Body: { code: string, label?: string }
- * Returns a long-lived device token (kept in localStorage).
+ * POST /api/device — direct sign-in with an email (no password, no code).
+ * First time = the account is created instantly; after that the browser
+ * stays signed in via the long-lived device token (kept in localStorage).
+ * Body: { email: string, label?: string }
  */
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
@@ -18,17 +19,27 @@ export async function POST(req: NextRequest) {
   } catch {
     return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
-  if (!accessCodeMatches(body.code)) {
-    return Response.json({ error: "كود الدخول غلط (wrong access code)" }, { status: 401 });
+  const email = normalizeLoginEmail(body.email);
+  if (!email) {
+    return Response.json({ error: "اكتب إيميل صحيح (زي you@gmail.com)" }, { status: 400 });
+  }
+  if (!emailAllowed(email)) {
+    return Response.json({ error: "الإيميل ده مش مسموح له بالدخول" }, { status: 403 });
   }
   await ensureSchema();
-  const id = randomToken();
   const now = Date.now();
+  // upsert the user (first login creates the account)
   await db.execute({
-    sql: "INSERT INTO devices (id, label, created_at, last_seen) VALUES (?, ?, ?, ?)",
-    args: [id, String(body.label ?? "web").slice(0, 100), now, now],
+    sql: `INSERT INTO users (email, created_at, last_login) VALUES (?, ?, ?)
+          ON CONFLICT(email) DO UPDATE SET last_login = excluded.last_login`,
+    args: [email, now, now],
   });
-  return Response.json({ device_token: id, created_at: now }, { status: 201 });
+  const id = randomToken();
+  await db.execute({
+    sql: "INSERT INTO devices (id, label, user_email, created_at, last_seen) VALUES (?, ?, ?, ?, ?)",
+    args: [id, String(body.label ?? "web").slice(0, 100), email, now, now],
+  });
+  return Response.json({ device_token: id, email, created_at: now }, { status: 201 });
 }
 
 /**

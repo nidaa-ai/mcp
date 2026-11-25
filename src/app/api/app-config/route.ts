@@ -1,9 +1,10 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
+import { db } from "@/lib/db";
 import { getAgentApiKey, getVapidKeys } from "@/lib/settings";
 import { getAgentInfo } from "@/lib/fish";
 import { listCalls, publicCall, markRingingTimeouts } from "@/lib/calls";
-import { FISH_AGENT_ID, APP_ACCESS_CODE } from "@/lib/env";
+import { FISH_AGENT_ID } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,10 @@ export async function GET(req: NextRequest) {
   const agent = await getAgentInfo().catch(() => null);
   await markRingingTimeouts().catch(() => {});
   const calls = await listCalls(12).catch(() => []);
+  const user = await db
+    .execute({ sql: "SELECT user_email FROM devices WHERE id = ?", args: [token] })
+    .then((rs) => (rs.rows[0]?.user_email as string | null) ?? null)
+    .catch(() => null);
 
   const mcpUrl = `${origin}/api/mcp?key=${key}`;
   const restBase = `${origin}/api`;
@@ -29,7 +34,7 @@ export async function GET(req: NextRequest) {
   return Response.json({
     origin,
     agent_api_key: key,
-    access_code_default: APP_ACCESS_CODE === "0000",
+    user_email: user,
     vapid_public_key: vapid.publicKey ?? null,
     fish_agent: agent ? { ...agent, configured: !!FISH_AGENT_ID } : { configured: !!FISH_AGENT_ID },
     recent_calls: calls.map(publicCall),

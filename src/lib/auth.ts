@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentApiKey } from "./settings";
-import { APP_ACCESS_CODE } from "./env";
+import { NIDAA_ALLOWED_EMAILS } from "./env";
 import { db, ensureSchema } from "./db";
 
 export type ApiError = { error: string };
@@ -36,9 +36,21 @@ export async function isValidDevice(token: string | null): Promise<boolean> {
   return rs.rows.length > 0;
 }
 
-/** The one-time pairing code for the web app. */
-export function accessCodeMatches(input: unknown): boolean {
-  return typeof input === "string" && input.trim() === APP_ACCESS_CODE;
+/** Normalize an email/username typed into the login screen. */
+export function normalizeLoginEmail(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  const email = input.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+  return email;
+}
+
+/** Optional email whitelist (NIDAA_ALLOWED_EMAILS). Empty = allow anyone. */
+export function emailAllowed(email: string): boolean {
+  const list = NIDAA_ALLOWED_EMAILS.split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  if (list.length === 0) return true;
+  return list.includes(email);
 }
 
 export function randomToken(): string {

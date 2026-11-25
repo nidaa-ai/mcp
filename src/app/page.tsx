@@ -1,7 +1,7 @@
 "use client";
 
 import { useNidaa } from "@/components/nidaa/useNidaa";
-import { Gate } from "@/components/nidaa/Gate";
+import { Login } from "@/components/nidaa/Login";
 import { Home } from "@/components/nidaa/Home";
 import { IncomingCall, ActiveCallScreen } from "@/components/nidaa/CallScreen";
 import { Toaster } from "@/components/ui/toaster";
@@ -12,7 +12,7 @@ export default function Page() {
   return (
     <main className="min-h-screen bg-[#0f0a1c]">
       {nidaa.phase === "gate" && (
-        <Gate pairing={nidaa.pairing} error={nidaa.pairError} onPair={nidaa.pair} />
+        <Login busy={nidaa.loginBusy} error={nidaa.loginError} onLogin={nidaa.login} />
       )}
 
       {nidaa.phase === "ready" && nidaa.config && (

@@ -54,9 +54,15 @@ CREATE INDEX IF NOT EXISTS idx_events_call ON call_events(call_id, seq);
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   label TEXT NOT NULL DEFAULT '',
+  user_email TEXT,
   push_json TEXT,
   created_at INTEGER NOT NULL,
   last_seen INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS users (
+  email TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  last_login INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -64,12 +70,24 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
+/** Idempotent column adds for databases created before email login. */
+const MIGRATIONS: Array<[string, string]> = [
+  ["devices", "ALTER TABLE devices ADD COLUMN user_email TEXT"],
+];
+
 export function ensureSchema(): Promise<void> {
   if (!globalForDb.schemaReady) {
     globalForDb.schemaReady = (async () => {
       for (const stmt of SCHEMA.split(";")) {
         const s = stmt.trim();
         if (s) await db.execute(s);
+      }
+      for (const [, ddl] of MIGRATIONS) {
+        try {
+          await db.execute(ddl);
+        } catch {
+          /* column already exists */
+        }
       }
     })();
   }

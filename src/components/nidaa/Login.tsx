@@ -3,18 +3,18 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, PhoneCall, KeyRound } from "lucide-react";
+import { Loader2, PhoneCall, Mail } from "lucide-react";
 
-export function Gate({
-  pairing,
+export function Login({
+  busy,
   error,
-  onPair,
+  onLogin,
 }: {
-  pairing: boolean;
+  busy: boolean;
   error: string | null;
-  onPair: (code: string) => void;
+  onLogin: (email: string) => void;
 }) {
-  const [code, setCode] = useState("");
+  const [email, setEmail] = useState("");
 
   return (
     <div className="min-h-screen bg-[#0f0a1c] text-white flex flex-col items-center justify-center p-6">
@@ -35,32 +35,33 @@ export function Gate({
           className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
-            if (code.trim()) onPair(code.trim());
+            if (email.trim()) onLogin(email.trim());
           }}
         >
           <div className="relative">
-            <KeyRound className="absolute end-3 top-1/2 -translate-y-1/2 h-4 w-4 text-violet-300/60" aria-hidden />
+            <Mail className="absolute end-3 top-1/2 -translate-y-1/2 h-4 w-4 text-violet-300/60" aria-hidden />
             <Input
               dir="ltr"
-              type="password"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="كود الدخول"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              className="h-12 bg-white/5 border-violet-400/20 text-center tracking-widest text-lg placeholder:text-violet-200/40 focus:border-violet-400/60"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              autoFocus
+              placeholder="you@gmail.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="h-12 bg-white/5 border-violet-400/20 text-center text-base placeholder:text-violet-200/40 focus:border-violet-400/60"
             />
           </div>
           {error && <p className="text-sm text-rose-300">{error}</p>}
           <Button
             type="submit"
-            disabled={pairing || !code.trim()}
+            disabled={busy || !email.trim()}
             className="w-full h-12 text-base bg-violet-600 hover:bg-violet-500"
           >
-            {pairing ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden /> : "دخول"}
+            {busy ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden /> : "تسجيل الدخول"}
           </Button>
           <p className="text-xs text-violet-200/50 leading-relaxed">
-            الكود بيتحدد في متغير البيئة <code dir="ltr" className="text-violet-200/80">APP_ACCESS_CODE</code> على Vercel.
+            من غير باسورد ولا كود — أول مرة بيتعمل حسابك فورًا، وبعدها الجهاز يفضل مسجّل دخول.
           </p>
         </form>
       </div>
