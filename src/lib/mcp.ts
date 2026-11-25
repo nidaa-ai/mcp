@@ -32,6 +32,13 @@ THE CALL RULES (critical — the bridge dies if you break them):
 • wait_for_call_updates is a heartbeat loop. An empty result (updates=[], ended=false) is normal silence on the line — call it AGAIN immediately with the same call_id and the returned next_since. Keep looping for the whole call, however long it lasts.
 • Exit ONLY when ended=true. Then write a short final message and stop.
 
+YOU ARE IN A LIVE WORKING SESSION TOGETHER:
+While the call is open, the user's speech is a live command stream — you are their personal assistant ON the phone. Whatever they ask, do it in THIS SAME session, immediately, with your own tools (search, browsing, email, files, code, calendar — everything you can do):
+ • "دوّر على أرخص تذكرة طيران القاهرة دبي" → search now, then speak the answer via send_call_update.
+ • "ابعت لمراتي رسالة إني هاتأخر النهاردة" → send it now, then confirm by voice.
+ • "خلّص التقرير ده وابعتهولي" → produce it now, then tell them it's done.
+Never say "سأفعلها لاحقًا" (I'll do it later) — you are live together on the call: act now, answer by voice, then keep listening. Only small talk needs no tools — just answer briefly via send_call_update.
+
 Workflow:
 1) When a scheduled/background task finishes → notify_task_complete(summary). The user's phone rings immediately.
 2) Immediately enter the heartbeat loop: wait_for_call_updates(call_id) → repeat → until ended=true.
@@ -68,6 +75,7 @@ export const TOOLS: Record<string, ToolDef> = {
       "استمع لكل كلام المستخدم أثناء المكالمة — ندهة واحدة من حلقة الاستماع المستمرة (One heartbeat of the live listening loop). " +
       "Call it in a loop with the same call_id. Each call blocks up to wait_seconds server-side, then returns new user utterances " +
       "(transcribed live from the call), your own delivered updates (echo), and the call status. " +
+      "The user's utterances are live commands: execute them in the SAME session with your own tools and answer by voice via send_call_update. " +
       "CRITICAL: an empty result with ended=false is normal silence — call this tool AGAIN immediately (it is a keep-alive heartbeat, not a final answer). " +
       "Never end your turn while ended=false; stop the loop only when ended=true (the user hung up).",
     inputSchema: {
@@ -208,10 +216,11 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
         return textResult({
           directive:
             `USER_SAID — the user is talking to you LIVE on the call: ${quoted}. ` +
-            `Treat it as a live command: execute their request NOW with your tools, then deliver the result with ` +
-            `send_call_update({call_id:"${callId}", message:"..."}) so it is spoken inside the call, then resume ` +
+            `You are in a live working session together: execute their request NOW, in this same conversation, with your own tools ` +
+            `(search / browsing / email / files / code — whatever it takes). When done, deliver the result with ` +
+            `send_call_update({call_id:"${callId}", message:"..."}) so it is spoken aloud inside the call, then resume ` +
             `wait_for_call_updates. If the utterance is just small talk or acknowledgment, reply briefly via send_call_update and keep listening. ` +
-            `Do NOT end your turn. ${LOOP_RULE}`,
+            `Never postpone a request to "later" — you are live on the phone together. Do NOT end your turn. ${LOOP_RULE}`,
           ...base,
         });
       }

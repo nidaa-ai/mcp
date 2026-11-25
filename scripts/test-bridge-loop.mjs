@@ -84,8 +84,11 @@ async function main() {
   const init = await mcp(key, "initialize", { protocolVersion: "2025-06-18" });
   const instr = init.result?.instructions ?? "";
   check(
-    "initialize carries the loop contract",
-    instr.includes("MUST NOT end your turn") && instr.includes("heartbeat"),
+    "initialize carries the loop + live-command contract",
+    instr.includes("MUST NOT end your turn") &&
+      instr.includes("heartbeat") &&
+      instr.includes("live command stream") &&
+      instr.includes("THIS SAME session"),
   );
 
   /* 2 — tools/list: the contract must travel with the tool descriptions */
@@ -164,8 +167,10 @@ async function main() {
   });
   const p2 = payloadOf(w2);
   check(
-    "wait → USER_SAID directive with the utterance",
-    p2.directive?.startsWith("USER_SAID") && (p2.user_speech ?? []).some((u) => (u.text ?? "").includes("فاتورة")),
+    "wait → USER_SAID directive with the utterance + same-session order",
+    p2.directive?.startsWith("USER_SAID") &&
+      p2.directive.includes("live working session together") &&
+      (p2.user_speech ?? []).some((u) => (u.text ?? "").includes("فاتورة")),
     `${p2.user_speech?.length ?? 0} speech / ${p2.your_updates_echo?.length ?? 0} echo`,
   );
 
