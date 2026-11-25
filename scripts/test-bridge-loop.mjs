@@ -5,10 +5,11 @@
  *
  *   notify_task_complete → RINGING keep-alive → (user answers) →
  *   user speaks via the custom-LLM bridge → ChatGPT replies with
- *   send_call_update (must be spoken instantly by the LLM bridge) →
+ *   send_call_update (spoken instantly, framed «رد الإيجنت: ...») →
  *   duplicate marker injection stays SILENT → new update + marker is spoken →
- *   USER_SAID directive → HEARTBEAT silence → IN_LOOP status →
- *   user hangs up from the app → CALL_ENDED (only exit).
+ *   no reply in the grace window → 503 DELEGATION to Fish's own agent brain
+ *   (natural relay speech per the system prompt) → USER_SAID directive →
+ *   HEARTBEAT silence → IN_LOOP status → user hangs up → CALL_ENDED.
  *
  * Usage: node scripts/test-bridge-loop.mjs http://localhost:3112
  * Pair with scripts/test-bridge-loop.sh (boots the server).
@@ -206,8 +207,9 @@ async function main() {
     marker2Spoken.slice(0, 50),
   );
 
-  /* 6d — agent following + reply late → short natural hold line, then a tiny
-   * acknowledgment on the next turn (never the same sentence twice) */
+  /* 6d — agent following, reply not ready within the grace window →
+   * DELEGATE the turn to Fish's own agent brain (503): the platform fallback
+   * model + relay system prompt does the natural talking, never us. */
   await db.execute({ sql: "UPDATE calls SET last_agent_poll = ? WHERE id = ?", args: [Date.now(), callId] });
   const hold1 = await fetch(`${APP}/api/llm/v1/chat/completions`, {
     method: "POST",
@@ -218,31 +220,40 @@ async function main() {
       messages: [{ role: "user", content: "طب اعمل ايه دلوقتي؟" }],
       fishaudio_extra_body: { call_id: callId },
     }),
-  }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
-  const hold1Spoken = sseText(hold1.text).trim();
+  });
+  const hold1Body = await hold1.json().catch(() => ({}));
   check(
-    "user turn, agent working → short varied hold line (not the old fixed one)",
-    hold1.ok && hold1Spoken.length > 0 && hold1Spoken.length <= 60 && !hold1Spoken.includes("مفيش رد"),
-    hold1Spoken.slice(0, 50),
+    "user turn, no reply in grace → 503 delegate to the platform brain (agent working)",
+    hold1.status === 503 && hold1Body.delegate === true && hold1Body.agent_following === true && hold1Body.reason === "agent_working",
+    `status ${hold1.status}, reason ${hold1Body.reason}`,
   );
-  const hold2 = await fetch(`${APP}/api/llm/v1/chat/completions`, {
+
+  /* 6e — Fish retries the SAME request after the 503 → the utterance must be
+   * deduped (identical turn), and the retry also delegates. */
+  const dup = await fetch(`${APP}/api/llm/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: "bridge-test",
       stream: true,
-      messages: [{ role: "user", content: "ومدى؟" }],
+      messages: [{ role: "user", content: "طب اعمل ايه دلوقتي؟" }],
       fishaudio_extra_body: { call_id: callId },
     }),
-  }).then(async (r) => ({ ok: r.ok, text: await r.text() }));
-  const hold2Spoken = sseText(hold2.text).trim();
+  });
+  const dupBody = await dup.json().catch(() => ({}));
+  const cnt = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM call_events WHERE call_id = ? AND kind = 'user_speech' AND text LIKE ?",
+    args: [callId, "%اعمل ايه%"],
+  });
+  const speechCount = Number(cnt.rows[0]?.n ?? -1);
   check(
-    "consecutive turns → tiny ack, different wording each time",
-    hold2.ok && hold2Spoken.length > 0 && hold2Spoken !== hold1Spoken && !hold2Spoken.includes("مفيش رد"),
-    hold2Spoken.slice(0, 50),
+    "Fish retry of the same turn → deduped (logged once) + delegated",
+    dup.status === 503 && dupBody.delegate === true && speechCount === 1,
+    `speech logged once (${speechCount}), status ${dup.status}`,
   );
 
-  /* 6c — agent loop broken → brief honest relay line, NEVER self-answering */
+  /* 6c — agent loop broken → still delegated: the platform brain relays
+   * naturally ("هوصله أول ما يرجع") instead of a canned intermediary line */
   await db.execute({
     sql: "UPDATE calls SET last_agent_poll = ? WHERE id = ?",
     args: [Date.now() - 300_000, callId],
@@ -253,15 +264,15 @@ async function main() {
     body: JSON.stringify({
       model: "bridge-test",
       stream: true,
-      messages: [{ role: "user", content: "فاتورة الكهربا اتدفعت النهاردة؟" }],
+      messages: [{ role: "user", content: "طب بعت الإيميل؟" }],
       fishaudio_extra_body: { call_id: callId },
     }),
-  }).then(async (r) => ({ ok: r.ok, status: r.status, text: await r.text() }));
-  const noAgentSpoken = sseText(noAgent.text);
+  });
+  const noAgentBody = await noAgent.json().catch(() => ({}));
   check(
-    "agent not connected → honest brief line (queue kept, no self-answer)",
-    noAgent.ok && noAgent.status === 200 && noAgentSpoken.includes("مش متوصل") && !noAgentSpoken.includes("وسيطك"),
-    noAgentSpoken.slice(0, 60),
+    "agent not connected → delegated with state (speech still queued, no self-answer)",
+    noAgent.status === 503 && noAgentBody.delegate === true && noAgentBody.agent_following === false && noAgentBody.reason === "no_agent_connected",
+    `status ${noAgent.status}, reason ${noAgentBody.reason}`,
   );
 
   /* 7 — next poll: the user utterance must arrive as USER_SAID */

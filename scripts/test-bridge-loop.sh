@@ -6,8 +6,9 @@ cd "$(dirname "$0")/.."
 PORT=3112
 rm -rf .next-test
 rm -f test-bridge.log
-# Short bridge wait so hold-line / silence checks run fast in CI
-LLM_BRIDGE_WAIT_MS=2500 WAIT_DEFAULT_SECONDS=3 setsid nohup bunx next dev -p $PORT > test-bridge.log 2>&1 < /dev/null &
+# Short grace window so the 503-delegation checks run fast in CI (the reply
+# in check 6 lands at ~1.2s, inside this window)
+LLM_BRIDGE_GRACE_MS=2500 WAIT_DEFAULT_SECONDS=3 setsid nohup bunx next dev -p $PORT > test-bridge.log 2>&1 < /dev/null &
 SRV=$!
 cleanup() { pkill -P $SRV 2>/dev/null; kill $SRV 2>/dev/null; pkill -f "next dev -p $PORT" 2>/dev/null; }
 trap cleanup EXIT

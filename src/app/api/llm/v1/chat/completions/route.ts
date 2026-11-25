@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { createHash } from "crypto";
 import { checkAgentAuth, unauthorized } from "@/lib/auth";
-import { getCall, addEvent, claimAgentUpdates, isAgentFollowing, setCallFields, sleep } from "@/lib/calls";
-import { LLM_BRIDGE_WAIT_MS } from "@/lib/env";
+import { getCall, addEvent, claimAgentUpdates, isAgentFollowing, setCallFields, sleep, type CallRow } from "@/lib/calls";
+import { LLM_BRIDGE_GRACE_MS } from "@/lib/env";
 import { relayState, noteReplySpoken, happenedWithin } from "@/lib/relay-state";
 
 export const runtime = "nodejs";
@@ -13,49 +13,34 @@ export const maxDuration = 30;
  * OpenAI-compatible chat-completions endpoint that Fish Audio's Voice Agent
  * (custom LLM) calls on every conversation turn.
  *
- * A LIVE relay between the human on the call and the connected AI agent
- * (ChatGPT/Claude over MCP). This endpoint NEVER answers requests by itself:
- *  - every user utterance is logged so wait_for_call_updates returns it to
- *    the agent as a live command,
- *  - the turn waits a few seconds for the agent's send_call_update reply and
- *    speaks it the MOMENT it lands, framed as "رد الإيجنت: ..." so it is
- *    always clear WHO answered,
- *  - while the agent is still working it says one short human hold line, then
- *    tiny varied acknowledgments — never the same sentence twice,
- *  - the browser injects "__NDAA_AGENT_UPDATE__" turns to make late agent
- *    replies audible immediately. A duplicate injection (the reply was
- *    already spoken by the in-turn wait loop, which won the atomic claim)
- *    stays SILENT — no "no reply yet" dead line, ever,
- *  - if the agent is not connected to the call it says so once, briefly —
- *    the speech is already queued for the agent to pick up when it returns.
+ * A STATEFUL ROUTER, not a talker. The natural talking is left to Fish's own
+ * agent brain — the manual fallback model with the agent's system prompt
+ * (relay role: never "I don't have access", never self-executing). This
+ * endpoint only owns what the platform brain CANNOT know:
+ *  - it logs every user utterance so wait_for_call_updates returns it to the
+ *    connected agent as a live command,
+ *  - it speaks the agent's send_call_update replies VERBATIM, framed as
+ *    "رد الإيجنت: ..." (turn fast-path + the browser's marker injection),
+ *  - for everything else it returns 503 after a ~1s grace window: Fish then
+ *    routes the turn to the fallback brain, which acks naturally in its own
+ *    words — varied, human, never the same sentence twice, never ours.
+ *
+ * CRITICAL timing note: Fish caps custom-LLM responses at 10 seconds and
+ * retries once. The old 12-second wait here used to blow that cap, so Fish
+ * fell back mid-wait with the OLD "you are the assistant" prompt — that is
+ * where the self-answers and "معنديش وصول" came from. The grace window is
+ * now ~1.2s; late agent replies are delivered by the marker injection.
  */
 export const AGENT_UPDATE_MARKER = "__NDAA_AGENT_UPDATE__";
 
 /**
  * Attribution is fixed on purpose: the caller must always know WHO answered.
- * Everything else varies; this prefix is the one stable anchor.
+ * The reply content is the agent's own — delivered verbatim, never rephrased.
  */
 const AGENT_FRAME = "رد الإيجنت: ";
 const CALL_ENDED_LINE = "المكالمة اتقفلت. مع السلامة.";
 /** Whitespace-only turn: the voice channel stays silent. */
 const SILENCE = " ";
-
-/** First hold line while the agent works — short, Egyptian, rotated. */
-const HOLD_LINES = [
-  "ثواني، هو شغّال عليه.",
-  "لحظة، بوصّله له.",
-  "هو بيعملها دلوقتي، أول ما يخلص هقولك.",
-  "استنى عليه ثواني بس.",
-];
-/** The user kept talking while the agent works — tiny live acknowledgments. */
-const ACK_LINES = ["تمام.", "أيوة.", "ماشي.", "تمام، هو لسه شغّال."];
-/** Agent not connected — full line once, then short reminders. */
-const NO_AGENT_FIRST =
-  "الإيجنت مش متوصل على الخط دلوقتي. كلامك اتسجلله وهاوصّله أول ما يرجع — لو دردشته مقفولة افتحها وقول له كمّل المتابعة.";
-const NO_AGENT_AGAIN = [
-  "لسه مش متوصل، أول ما يرجع هوصّله.",
-  "هو بره الخط، كلامك محفوظ له.",
-];
 
 const ENDED_STATUSES = ["ended", "missed", "declined", "failed"];
 
@@ -104,6 +89,24 @@ function joinClaimed(events: { text: string | null }[]): string {
   return events.map((e) => e.text ?? "").filter(Boolean).join("\n\n");
 }
 
+/** Hand the turn to Fish's own agent brain (manual fallback model). */
+function delegateToPlatformBrain(fresh: CallRow | null, model: string) {
+  if (!fresh || ENDED_STATUSES.includes(fresh.status)) {
+    return sseResponse(CALL_ENDED_LINE, model);
+  }
+  const following = isAgentFollowing(fresh);
+  return Response.json(
+    {
+      error: "delegated to the platform fallback model — natural relay speech per the agent system prompt",
+      delegate: true,
+      reason: following ? "agent_working" : "no_agent_connected",
+      agent_following: following,
+      grace_ms: LLM_BRIDGE_GRACE_MS,
+    },
+    { status: 503 },
+  );
+}
+
 export async function POST(req: NextRequest) {
   if (!(await checkAgentAuth(req))) return unauthorized();
 
@@ -121,9 +124,9 @@ export async function POST(req: NextRequest) {
 
   if (!callId) {
     // Session without a Nidaa call mapping (e.g. a plain phone call to the
-    // bound Twilio number): let the platform fallback LLM answer instead.
+    // bound Twilio number): delegate to the platform brain for the whole call.
     return Response.json(
-      { error: "no call_id mapping — reserved for the platform fallback model", hint: "configure llm.fallback for unmapped sessions" },
+      { error: "no call_id mapping — delegated to the platform fallback model", delegate: true, reason: "unmapped_session" },
       { status: 503 },
     );
   }
@@ -152,10 +155,8 @@ export async function POST(req: NextRequest) {
       noteReplySpoken(callId, claimed.map((e) => e.seq));
       return sseResponse(AGENT_FRAME + text, model);
     }
-    // Nothing to claim: this injection raced with the in-turn wait loop and
-    // the reply was ALREADY spoken in the previous turn. Stay silent — this
-    // is exactly where the old "لسه مفيش رد جديد من الإيجنت" line made the
-    // call feel dead while the reply was on screen a second earlier.
+    // Nothing to claim: this injection raced with the turn fast-path and the
+    // reply was ALREADY spoken. Stay silent — no "no reply yet" dead line.
     return sseResponse(SILENCE, model);
   }
 
@@ -165,66 +166,39 @@ export async function POST(req: NextRequest) {
     return sseResponse(SILENCE, model);
   }
 
-  /* ---- case 2: a real user utterance (deduped) ---- */
-  if (lastUserIdx >= 0 && lastUserText.trim()) {
-    const hash = createHash("sha256").update(lastUserText).digest("hex").slice(0, 16);
-    const isDuplicate = call.last_user_idx === lastUserIdx && call.last_user_hash === hash;
-    if (!isDuplicate) {
-      await addEvent(callId, "user_speech", lastUserText);
-      await setCallFields(callId, { last_user_idx: lastUserIdx, last_user_hash: hash });
-    }
-
-    // Wait for the connected agent (ChatGPT/Claude) to send its reply. The
-    // claim is atomic, so the browser's marker injection and this loop can
-    // never both speak the same update.
-    const st = relayState(callId);
-    const startSpokenSeq = st.lastSpokenSeq;
-    const deadline = Date.now() + LLM_BRIDGE_WAIT_MS;
-    while (Date.now() < deadline) {
-      const claimed = await claimAgentUpdates(callId);
-      const text = joinClaimed(claimed);
-      if (text) {
-        noteReplySpoken(callId, claimed.map((e) => e.seq));
-        return sseResponse(AGENT_FRAME + text, model);
-      }
-      // The marker turn won the race and just delivered the reply while we
-      // were waiting — go quiet instead of stacking a line on top of it.
-      if (st.lastSpokenSeq !== startSpokenSeq && happenedWithin(st.lastReplyAt, 15_000)) {
-        return sseResponse(SILENCE, model);
-      }
-      const fresh = await getCall(callId);
-      if (!fresh || ENDED_STATUSES.includes(fresh.status)) {
-        return sseResponse(CALL_ENDED_LINE, model);
-      }
-      await sleep(250);
-    }
+  /* ---- case 2: a real user utterance ---- */
+  const hash = createHash("sha256").update(lastUserText).digest("hex").slice(0, 16);
+  const isDuplicate = call.last_user_idx === lastUserIdx && call.last_user_hash === hash;
+  if (!isDuplicate) {
+    await addEvent(callId, "user_speech", lastUserText);
+    await setCallFields(callId, { last_user_idx: lastUserIdx, last_user_hash: hash });
   }
 
-  const freshCall = await getCall(callId);
-  if (freshCall && ENDED_STATUSES.includes(freshCall.status)) {
-    return sseResponse(CALL_ENDED_LINE, model);
-  }
+  // Grace window: catch a reply that is already here or lands within ~1s
+  // (e.g. the agent finished right as the user spoke). The claim is atomic,
+  // so the browser's marker injection and this loop never double-speak.
   const st = relayState(callId);
-  const following = freshCall ? isAgentFollowing(freshCall) : false;
-
-  if (!following) {
-    // Pure relay: never answer the request ourselves. The utterance is
-    // already queued (user_speech event) and reaches the agent when it
-    // re-enters the loop. Say it in full once, then keep it short.
-    const line = happenedWithin(st.lastNoAgentAt, 90_000)
-      ? NO_AGENT_AGAIN[st.holds % NO_AGENT_AGAIN.length]
-      : NO_AGENT_FIRST;
-    st.lastNoAgentAt = Date.now();
-    st.holds += 1;
-    return sseResponse(line, model);
+  const startSpokenSeq = st.lastSpokenSeq;
+  const deadline = Date.now() + LLM_BRIDGE_GRACE_MS;
+  while (Date.now() < deadline) {
+    const claimed = await claimAgentUpdates(callId);
+    const text = joinClaimed(claimed);
+    if (text) {
+      noteReplySpoken(callId, claimed.map((e) => e.seq));
+      return sseResponse(AGENT_FRAME + text, model);
+    }
+    // The marker turn won the race and just delivered the reply — stay quiet.
+    if (st.lastSpokenSeq !== startSpokenSeq && happenedWithin(st.lastReplyAt, 15_000)) {
+      return sseResponse(SILENCE, model);
+    }
+    const fresh = await getCall(callId);
+    if (!fresh || ENDED_STATUSES.includes(fresh.status)) {
+      return sseResponse(CALL_ENDED_LINE, model);
+    }
+    await sleep(200);
   }
 
-  // The MCP client is on the call and working; its reply hasn't arrived yet.
-  // One natural hold line first, tiny acknowledgments afterwards.
-  const line = happenedWithin(st.lastHoldAt, 45_000)
-    ? ACK_LINES[st.holds % ACK_LINES.length]
-    : HOLD_LINES[st.holds % HOLD_LINES.length];
-  st.lastHoldAt = Date.now();
-  st.holds += 1;
-  return sseResponse(line, model);
+  /* ---- no reply yet → let Fish's own agent brain talk naturally ---- */
+  const fresh = await getCall(callId);
+  return delegateToPlatformBrain(fresh, model);
 }

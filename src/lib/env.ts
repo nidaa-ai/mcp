@@ -27,11 +27,12 @@ function numEnv(name: string, fallback: number): number {
 /** How long the incoming call rings before it is marked as missed (ms). */
 export const RING_TIMEOUT_MS = numEnv("RING_TIMEOUT_MS", 60_000);
 /**
- * How long the custom-LLM bridge waits for the MCP client reply (ms).
- * ChatGPT needs: poll returns → model thinks → send_call_update. Late replies
- * are still spoken via the browser SSE injection, so this only tunes latency.
+ * Grace window (ms) before a turn is delegated to Fish's own agent brain.
+ * Keep it WELL under Fish's 10-second custom-LLM response cap — the agent's
+ * real reply usually arrives later and is spoken via the browser's marker
+ * injection, while the platform fallback model does the natural talking.
  */
-export const LLM_BRIDGE_WAIT_MS = numEnv("LLM_BRIDGE_WAIT_MS", 12_000);
+export const LLM_BRIDGE_GRACE_MS = numEnv("LLM_BRIDGE_GRACE_MS", 1_200);
 /** Default / max long-poll window for wait_for_call_updates (seconds).
  *  12s keeps the agent's view of the user's speech fresh (~6s average) so
  *  replies land inside the bridge's speak window and the call feels live. */
