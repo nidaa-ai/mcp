@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -10,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   PhoneCall, BellRing, Download, Plug, Copy, Check,
   MessageSquare, Bot, Clock, Signal, LogOut, Phone,
+  Fish, Save, Loader2,
 } from "lucide-react";
 import type { AppConfig } from "./types";
 
@@ -61,6 +63,115 @@ function timeAgo(ts: number) {
   return new Date(ts).toLocaleDateString("ar-EG");
 }
 
+/** In-app Fish Audio credentials form — saved to the Turso settings table. */
+function FishSettingsCard({
+  config,
+  saving,
+  onSave,
+}: {
+  config: AppConfig;
+  saving: boolean;
+  onSave: (vals: { fish_api_key?: string; fish_agent_id?: string; fish_phone_number_id?: string }) => Promise<boolean>;
+}) {
+  const fc = config.fish_config;
+  const [apiKey, setApiKey] = useState("");
+  const [agentId, setAgentId] = useState(fc.agent_id || "d0df6840a7454f92aa818ff8575eeff4");
+  const [phoneId, setPhoneId] = useState(fc.phone_number_id || "ab10a45646d84f1f8d31aacf359de261");
+
+  const chips: Array<[string, boolean]> = [
+    ["API Key", !!fc.api_key_set],
+    ["Agent", !!fc.agent_id],
+    ["رقم التليفون", !!fc.phone_number_id],
+  ];
+
+  return (
+    <Card className="bg-white/[0.03] border-violet-400/10">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-semibold text-violet-100 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <Fish className="h-4 w-4 text-violet-300" aria-hidden />
+            إعدادات Fish Audio
+          </span>
+          <span className="flex gap-1">
+            {chips.map(([label, ok]) => (
+              <Badge
+                key={label}
+                className={ok
+                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/30 hover:bg-emerald-500/15"
+                  : "bg-amber-500/15 text-amber-300 border-amber-400/30 hover:bg-amber-500/15"}
+              >
+                {label} {ok ? "✓" : "ناقص"}
+              </Badge>
+            ))}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-4 pt-2 space-y-3">
+        <p className="text-[11px] text-violet-200/60 leading-relaxed">
+          القيم دي بتتخزن في قاعدة البيانات — مفيش حاجة تتحط على Vercel. سيب حاجة فاضية لو مش عايز تغيّرها.
+        </p>
+        <form
+          className="space-y-3"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const ok = await onSave({
+              fish_api_key: apiKey.trim() || undefined,
+              fish_agent_id: agentId.trim() || undefined,
+              fish_phone_number_id: phoneId.trim() || undefined,
+            });
+            if (ok) setApiKey("");
+          }}
+        >
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-api-key">API Key</label>
+            <Input
+              id="fish-api-key"
+              dir="ltr"
+              type="password"
+              autoComplete="off"
+              placeholder={fc.api_key_masked ?? "sk-fish-…"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              className="h-10 bg-white/5 border-violet-400/20 text-sm focus:border-violet-400/60"
+            />
+            {fc.api_key_masked && (
+              <p className="text-[10px] text-violet-200/50">المحفوظ حاليًا: <span dir="ltr">{fc.api_key_masked}</span> — سيبه فاضي عشان يفضل</p>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-agent-id">Agent ID (hussain)</label>
+            <Input
+              id="fish-agent-id"
+              dir="ltr"
+              autoComplete="off"
+              placeholder="d0df6840a7454f92aa818ff8575eeff4"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              className="h-10 bg-white/5 border-violet-400/20 text-sm focus:border-violet-400/60"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-phone-id">Phone Number ID (رقم Twilio)</label>
+            <Input
+              id="fish-phone-id"
+              dir="ltr"
+              autoComplete="off"
+              placeholder="ab10a45646d84f1f8d31aacf359de261"
+              value={phoneId}
+              onChange={(e) => setPhoneId(e.target.value)}
+              className="h-10 bg-white/5 border-violet-400/20 text-sm focus:border-violet-400/60"
+            />
+          </div>
+          <Button type="submit" disabled={saving} className="w-full h-10 bg-violet-600 hover:bg-violet-500">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Save className="h-4 w-4" aria-hidden />}
+            {saving ? "جاري الحفظ…" : "حفظ الإعدادات"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Home({
   config,
   pushEnabled,
@@ -68,6 +179,7 @@ export function Home({
   onLinkFish,
   onLogout,
   onRefresh,
+  onSaveFishSettings,
 }: {
   config: AppConfig;
   pushEnabled: boolean;
@@ -75,9 +187,11 @@ export function Home({
   onLinkFish: () => void;
   onLogout: () => void;
   onRefresh: () => void;
+  onSaveFishSettings: (vals: { fish_api_key?: string; fish_agent_id?: string; fish_phone_number_id?: string }) => Promise<boolean>;
 }) {
   const [installPrompt, setInstallPrompt] = useState<{ prompt: () => Promise<void> } | null>(null);
   const [fishLinking, setFishLinking] = useState(false);
+  const [fishSaving, setFishSaving] = useState(false);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -201,6 +315,19 @@ export function Home({
           </CardContent>
         </Card>
 
+        {/* fish audio credentials (stored in the DB) */}
+        <FishSettingsCard
+          key={`${config.fish_config?.api_key_set}|${config.fish_config?.agent_id}|${config.fish_config?.phone_number_id}`}
+          config={config}
+          saving={fishSaving}
+          onSave={async (vals) => {
+            setFishSaving(true);
+            const ok = await onSaveFishSettings(vals);
+            setFishSaving(false);
+            return ok;
+          }}
+        />
+
         {/* connect agents */}
         <Card className="bg-white/[0.03] border-violet-400/10">
           <CardHeader className="pb-2">
@@ -258,12 +385,13 @@ export function Home({
             <div className="mt-4 flex items-center justify-between gap-2 rounded-lg bg-black/30 border border-violet-400/10 p-3">
               <div className="flex items-center gap-2 min-w-0">
                 <Bot className="h-4 w-4 text-violet-300 shrink-0" aria-hidden />
-                <p className="text-[11px] text-violet-200/70 leading-snug">ربط Fish Audio (Custom LLM + Webhook) بنفس الزر</p>
+                <p className="text-[11px] text-violet-200/70 leading-snug">ربط Fish Audio (Custom LLM + Webhook + الرقم) بنفس الزر</p>
               </div>
               <Button
                 size="sm"
                 className="bg-violet-600 hover:bg-violet-500 h-8 shrink-0"
-                disabled={fishLinking}
+                disabled={fishLinking || !config.fish_config?.api_key_set || !config.fish_config?.agent_id}
+                title={!config.fish_config?.api_key_set || !config.fish_config?.agent_id ? "احفظ إعدادات Fish الأول" : "اربط كل حاجة"}
                 onClick={async () => {
                   setFishLinking(true);
                   await onLinkFish();

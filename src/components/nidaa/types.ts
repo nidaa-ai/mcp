@@ -18,6 +18,12 @@ export interface AppConfig {
   user_email: string | null;
   vapid_public_key: string | null;
   fish_agent: { configured: boolean; name?: string; status?: string; publication_state?: string };
+  fish_config: {
+    api_key_set: boolean;
+    api_key_masked: string | null;
+    agent_id: string;
+    phone_number_id: string;
+  };
   recent_calls?: AppConfigCall[];
   configs: {
     chatgpt: { label: string; url: string; note: string };

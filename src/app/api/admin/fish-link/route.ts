@@ -1,8 +1,7 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
-import { getAgentApiKey, getFishWebhookSecret } from "@/lib/settings";
+import { getAgentApiKey, getFishWebhookSecret, getFishConfig } from "@/lib/settings";
 import { patchAgentConfig, publishAgent, bindPhoneNumber } from "@/lib/fish";
-import { FISH_AGENT_ID, FISH_PHONE_NUMBER_ID } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +24,14 @@ const AGENT_SYSTEM_PROMPT = `إنت «نداء»، مساعد صوتي عربي 
 export async function POST(req: NextRequest) {
   const token = checkDeviceToken(req);
   if (!token || !(await isValidDevice(token))) return Response.json({ error: "unauthorized device token" }, { status: 401 });
-  if (!FISH_AGENT_ID) return Response.json({ error: "FISH_AGENT_ID not configured" }, { status: 500 });
+
+  const fishCfg = await getFishConfig();
+  if (!fishCfg.api_key || !fishCfg.agent_id) {
+    return Response.json(
+      { error: "اضبط إعدادات Fish Audio الأول (API Key + Agent ID) من بطاقة الإعدادات في التطبيق" },
+      { status: 400 },
+    );
+  }
 
   let body: Record<string, unknown> = {};
   try {
@@ -38,19 +44,26 @@ export async function POST(req: NextRequest) {
   const results: Record<string, unknown> = {};
 
   // 1) custom LLM → our bridge endpoint
-  await patchAgentConfig({
-    llm: {
-      custom: {
-        base_url: `${origin}/api/llm/v1`,
-        model: "nidaa-bridge",
-        api_key: apiKey,
+  try {
+    await patchAgentConfig({
+      llm: {
+        custom: {
+          base_url: `${origin}/api/llm/v1`,
+          model: "nidaa-bridge",
+          api_key: apiKey,
+        },
+        fallback: {
+          mode: "manual",
+          models: [{ model: "openai/gpt-6.1-sol-fast" }],
+        },
       },
-      fallback: {
-        mode: "manual",
-        models: [{ model: "openai/gpt-6.1-sol-fast" }],
-      },
-    },
-  });
+    });
+  } catch (err) {
+    return Response.json(
+      { error: `Fish Audio رفض الاتصال — راجع الـ API Key في بطاقة الإعدادات (${(err as Error).message.slice(0, 160)})` },
+      { status: 400 },
+    );
+  }
   results.custom_llm = `${origin}/api/llm/v1`;
 
   // 2) conversation behavior suited to the bridge
@@ -85,10 +98,10 @@ export async function POST(req: NextRequest) {
   const pub = await publishAgent();
   results.published = pub;
 
-  // 6) bind the Twilio number for inbound phone calls (env-configured, or
-  //    passed explicitly in the request body)
+  // 6) bind the Twilio number for inbound phone calls (saved in the app
+  //    settings, or passed explicitly in the request body)
   const bindId =
-    typeof body.bind_phone_number_id === "string" ? body.bind_phone_number_id : FISH_PHONE_NUMBER_ID;
+    typeof body.bind_phone_number_id === "string" ? body.bind_phone_number_id : fishCfg.phone_number_id;
   if (bindId) {
     try {
       const bound = await bindPhoneNumber(bindId);
@@ -98,5 +111,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return Response.json({ ok: true, origin, agent_id: FISH_AGENT_ID, results });
+  return Response.json({ ok: true, origin, agent_id: fishCfg.agent_id, results });
 }

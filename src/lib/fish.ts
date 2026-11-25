@@ -1,21 +1,25 @@
-import { FISH_API_BASE, FISH_API_KEY, FISH_AGENT_ID } from "./env";
+import { FISH_API_BASE } from "./env";
+import { getFishConfig } from "./settings";
 
 /** Thin REST client for the Fish Audio Voice Agents API. */
 async function fish(path: string, init?: RequestInit): Promise<Response> {
-  if (!FISH_API_KEY) throw new Error("FISH_API_KEY is not configured");
+  const { api_key } = await getFishConfig();
+  if (!api_key) throw new Error("FISH_API_KEY is not set — add it in the app settings");
   return fetch(`${FISH_API_BASE}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${FISH_API_KEY}`,
+      Authorization: `Bearer ${api_key}`,
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
   });
 }
 
-export function agentId(): string {
-  if (!FISH_AGENT_ID) throw new Error("FISH_AGENT_ID is not configured");
-  return FISH_AGENT_ID;
+/** Resolve the voice agent id (DB setting, env fallback). */
+export async function agentId(): Promise<string> {
+  const { agent_id } = await getFishConfig();
+  if (!agent_id) throw new Error("FISH_AGENT_ID is not set — add it in the app settings");
+  return agent_id;
 }
 
 /** Build the spoken opener for a call: the agent reads the task summary first. */
@@ -45,7 +49,7 @@ export async function createVoiceSession(callId: string, title: string, summary:
   const res = await fish("/v1/agent/sessions", {
     method: "POST",
     body: JSON.stringify({
-      agent_id: agentId(),
+      agent_id: await agentId(),
       end_user_id: "owner",
       metadata: { call_id: callId, app: "nidaa" },
       llm_extra_body: { call_id: callId },
@@ -91,7 +95,7 @@ export interface FishAgentInfo {
 
 export async function getAgentInfo(): Promise<FishAgentInfo | null> {
   try {
-    const res = await fish(`/v1/agent/agents/${agentId()}`);
+    const res = await fish(`/v1/agent/agents/${await agentId()}`);
     if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;
     return {
@@ -107,7 +111,7 @@ export async function getAgentInfo(): Promise<FishAgentInfo | null> {
 
 /** PATCH agent config (draft). Used by the one-click "link Fish" admin action. */
 export async function patchAgentConfig(patch: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const res = await fish(`/v1/agent/agents/${agentId()}/config`, { method: "PATCH", body: JSON.stringify(patch) });
+  const res = await fish(`/v1/agent/agents/${await agentId()}/config`, { method: "PATCH", body: JSON.stringify(patch) });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`Fish config patch failed (${res.status}): ${JSON.stringify(body).slice(0, 400)}`);
   return body;
@@ -115,7 +119,7 @@ export async function patchAgentConfig(patch: Record<string, unknown>): Promise<
 
 /** Publish the agent draft so new sessions pick up the config. */
 export async function publishAgent(): Promise<Record<string, unknown>> {
-  const res = await fish(`/v1/agent/agents/${agentId()}/publish`, { method: "POST" });
+  const res = await fish(`/v1/agent/agents/${await agentId()}/publish`, { method: "POST" });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`Fish publish failed (${res.status}): ${JSON.stringify(body).slice(0, 400)}`);
   return body;
@@ -125,7 +129,7 @@ export async function publishAgent(): Promise<Record<string, unknown>> {
 export async function bindPhoneNumber(phoneNumberId: string): Promise<Record<string, unknown>> {
   const res = await fish(`/v1/agent/phone-numbers/${phoneNumberId}`, {
     method: "PATCH",
-    body: JSON.stringify({ agent_id: agentId() }),
+    body: JSON.stringify({ agent_id: await agentId() }),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`Phone bind failed (${res.status}): ${JSON.stringify(body).slice(0, 400)}`);

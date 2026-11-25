@@ -23,6 +23,7 @@ export default function Page() {
           onLinkFish={() => nidaa.linkFish()}
           onLogout={nidaa.logout}
           onRefresh={() => void nidaa.refresh()}
+          onSaveFishSettings={nidaa.saveFishSettings}
         />
       )}
 

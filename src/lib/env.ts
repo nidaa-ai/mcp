@@ -1,7 +1,11 @@
 export const FISH_API_BASE = process.env.FISH_API_BASE ?? "https://api.fish.audio";
-export const FISH_API_KEY = process.env.FISH_API_KEY ?? "";
-export const FISH_AGENT_ID = process.env.FISH_AGENT_ID ?? "";
-export const FISH_PHONE_NUMBER_ID = process.env.FISH_PHONE_NUMBER_ID ?? "";
+/**
+ * Fish Audio credentials are managed IN THE APP (stored in the Turso settings
+ * table) — these env vars are only an optional bootstrap fallback.
+ */
+export const FISH_API_KEY_ENV = process.env.FISH_API_KEY ?? "";
+export const FISH_AGENT_ID_ENV = process.env.FISH_AGENT_ID ?? "";
+export const FISH_PHONE_NUMBER_ID_ENV = process.env.FISH_PHONE_NUMBER_ID ?? "";
 export const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL ?? "";
 export const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN ?? "";
 /**

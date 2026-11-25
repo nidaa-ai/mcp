@@ -392,11 +392,41 @@ export function useNidaa() {
     }
   }, [showToast, loadConfig]);
 
+  /* -------------------------------------------------- fish settings ---- */
+
+  /** Save Fish credentials from the in-app settings form (stored in Turso). */
+  const saveFishSettings = useCallback(async (vals: {
+    fish_api_key?: string;
+    fish_agent_id?: string;
+    fish_phone_number_id?: string;
+  }): Promise<boolean> => {
+    const token = tokenRef.current;
+    if (!token) return false;
+    try {
+      const res = await fetch("/api/admin/fish-settings", {
+        method: "POST",
+        headers: { "x-device-token": token, "Content-Type": "application/json" },
+        body: JSON.stringify(vals),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; error?: string; agent?: { name?: string } | null;
+      };
+      if (!res.ok || !body.ok) throw new Error(body.error ?? "فشل حفظ الإعدادات");
+      if (body.agent?.name) showToast(`تم الحفظ ✓ — الإيجنت «${body.agent.name}» شغّال`);
+      else showToast("اتحفظ — بس Fish مش ردّ بالاسم، اتأكد من الـ API Key والـ Agent ID");
+      await loadConfig(token);
+      return true;
+    } catch (err) {
+      showToast((err as Error).message);
+      return false;
+    }
+  }, [showToast, loadConfig]);
+
   return {
     phase, config, loginBusy, loginError,
     login, logout, refresh, loadConfig,
     incoming, active, bubbles, toast, showToast,
     accept, decline, hangup, toggleMute, closeEnded,
-    pushEnabled, enablePush, linkFish,
+    pushEnabled, enablePush, linkFish, saveFishSettings,
   };
 }

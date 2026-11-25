@@ -13,9 +13,11 @@
  *   node scripts/setup-fish.mjs https://your-app.vercel.app
  *   node scripts/setup-fish.mjs https://your-app.vercel.app --no-phone   (skip binding)
  *
- * Env (or scripts/.secrets.env):
+ * Env (or scripts/.secrets.env, or the app's Turso settings table):
  *   FISH_API_KEY, FISH_AGENT_ID, FISH_PHONE_NUMBER_ID,
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, AGENT_API_KEY (optional override)
+ * Fish credentials saved from the app ("إعدادات Fish Audio" card) are read
+ * from Turso automatically when the env vars are missing.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { createClient } from "@libsql/client";
@@ -43,9 +45,28 @@ if (existsSync(".env") && !process.env.FISH_API_KEY) {
 
 const FISH_API_KEY = process.env.FISH_API_KEY;
 const FISH_AGENT_ID = process.env.FISH_AGENT_ID;
-const PHONE_ID = process.env.FISH_PHONE_NUMBER_ID ?? "ab10a45646d84f1f8d31aacf359de261";
-if (!FISH_API_KEY || !FISH_AGENT_ID) {
-  console.error("Missing FISH_API_KEY or FISH_AGENT_ID");
+const PHONE_ID = process.env.FISH_PHONE_NUMBER_ID;
+
+// Fish credentials can live in the Turso settings table (saved from the app's
+// "إعدادات Fish Audio" card) — fall back to them when not in the environment.
+let DB_FISH = null;
+if ((!FISH_API_KEY || !FISH_AGENT_ID) && process.env.TURSO_DATABASE_URL) {
+  try {
+    const db = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN });
+    const rs = await db.execute(
+      "SELECT key, value FROM settings WHERE key IN ('fish_api_key','fish_agent_id','fish_phone_number_id')",
+    );
+    DB_FISH = Object.fromEntries(rs.rows.map((r) => [r.key, r.value]));
+  } catch (err) {
+    console.warn("[!] could not read Fish settings from Turso:", err.message);
+  }
+}
+
+const API_KEY = FISH_API_KEY || DB_FISH?.fish_api_key;
+const AGENT_ID = FISH_AGENT_ID || DB_FISH?.fish_agent_id;
+const BIND_PHONE_ID = PHONE_ID || DB_FISH?.fish_phone_number_id || "ab10a45646d84f1f8d31aacf359de261";
+if (!API_KEY || !AGENT_ID) {
+  console.error("Missing FISH_API_KEY / FISH_AGENT_ID (env or app settings in Turso)");
   process.exit(1);
 }
 
@@ -55,7 +76,7 @@ async function fish(path, init) {
   const res = await fetch(`${FISH}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${FISH_API_KEY}`,
+      Authorization: `Bearer ${API_KEY}`,
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
@@ -83,7 +104,7 @@ const SYSTEM_PROMPT = `إنت «نداء»، مساعد صوتي عربي شخص
 async function main() {
   console.log(`\nNidaa — Fish Audio setup`);
   console.log(`App URL : ${APP_URL}`);
-  console.log(`Agent   : ${FISH_AGENT_ID}`);
+  console.log(`Agent   : ${AGENT_ID}`);
 
   const agentKey = await getAgentApiKey();
   if (!agentKey) {
@@ -94,7 +115,7 @@ async function main() {
 
   // 1) custom LLM bridge
   console.log("\n[1/5] Custom LLM →", `${APP_URL}/api/llm/v1`);
-  await fish(`/v1/agent/agents/${FISH_AGENT_ID}/config`, {
+  await fish(`/v1/agent/agents/${AGENT_ID}/config`, {
     method: "PATCH",
     body: JSON.stringify({
       llm: {
@@ -110,7 +131,7 @@ async function main() {
 
   // 2) conversation behavior for clean MCP bridging
   try {
-    await fish(`/v1/agent/agents/${FISH_AGENT_ID}/config`, {
+    await fish(`/v1/agent/agents/${AGENT_ID}/config`, {
       method: "PATCH",
       body: JSON.stringify({
         conversation: { speculative_response: false, hangup_after_seconds: 600 },
@@ -122,7 +143,7 @@ async function main() {
   }
 
   // 3) system prompt
-  await fish(`/v1/agent/agents/${FISH_AGENT_ID}/config`, {
+  await fish(`/v1/agent/agents/${AGENT_ID}/config`, {
     method: "PATCH",
     body: JSON.stringify({ prompt: { system_prompt: SYSTEM_PROMPT } }),
   });
@@ -130,7 +151,7 @@ async function main() {
 
   // 4) webhooks (with a stable secret: derive from the agent key)
   const secret = `nidaa_${agentKey.slice(-32)}`;
-  await fish(`/v1/agent/agents/${FISH_AGENT_ID}/config`, {
+  await fish(`/v1/agent/agents/${AGENT_ID}/config`, {
     method: "PATCH",
     body: JSON.stringify({
       webhooks: { post_call: [{ url: `${APP_URL}/api/fish/webhook`, secret }] },
@@ -139,17 +160,17 @@ async function main() {
   console.log("[4/5] Webhook →", `${APP_URL}/api/fish/webhook`);
 
   // 5) publish
-  const pub = await fish(`/v1/agent/agents/${FISH_AGENT_ID}/publish`, { method: "POST" });
+  const pub = await fish(`/v1/agent/agents/${AGENT_ID}/publish`, { method: "POST" });
   console.log("[5/5] Published:", JSON.stringify(pub).slice(0, 120));
 
   // 6) bind phone number
-  if (BIND_PHONE && PHONE_ID) {
+  if (BIND_PHONE && BIND_PHONE_ID) {
     try {
-      const bound = await fish(`/v1/agent/phone-numbers/${PHONE_ID}`, {
+      const bound = await fish(`/v1/agent/phone-numbers/${BIND_PHONE_ID}`, {
         method: "PATCH",
-        body: JSON.stringify({ agent_id: FISH_AGENT_ID }),
+        body: JSON.stringify({ agent_id: AGENT_ID }),
       });
-      console.log(`[+] Phone bound: ${bound.phone_number ?? PHONE_ID} → agent ${FISH_AGENT_ID}`);
+      console.log(`[+] Phone bound: ${bound.phone_number ?? BIND_PHONE_ID} → agent ${AGENT_ID}`);
     } catch (e) {
       console.log("[!] Phone bind failed:", e.message);
     }

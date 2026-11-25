@@ -5,6 +5,9 @@ import {
   FISH_WEBHOOK_SECRET_ENV,
   VAPID_PUBLIC_KEY_ENV,
   VAPID_PRIVATE_KEY_ENV,
+  FISH_API_KEY_ENV,
+  FISH_AGENT_ID_ENV,
+  FISH_PHONE_NUMBER_ID_ENV,
 } from "./env";
 
 /** getSetting / setSetting on the settings kv table. */
@@ -65,4 +68,63 @@ export async function getVapidKeys(): Promise<{ publicKey: string; privateKey: s
   await setSetting("vapid_public_key", keys.publicKey);
   await setSetting("vapid_private_key", keys.privateKey);
   return keys;
+}
+
+/* ---------------------------------------------------- Fish credentials ---- */
+
+export interface FishConfig {
+  api_key: string;
+  agent_id: string;
+  phone_number_id: string;
+}
+
+/** True when the stored/env value is usable (not blank). */
+function pick(stored: string | null, fallback: string): string {
+  const v = (stored ?? "").trim();
+  return v || fallback;
+}
+
+/**
+ * Fish Audio credentials. The values saved from inside the app (Turso
+ * settings table) win; the env vars are only a bootstrap fallback.
+ */
+export async function getFishConfig(): Promise<FishConfig> {
+  const [key, agent, phone] = await Promise.all([
+    getSetting("fish_api_key"),
+    getSetting("fish_agent_id"),
+    getSetting("fish_phone_number_id"),
+  ]);
+  return {
+    api_key: pick(key, FISH_API_KEY_ENV),
+    agent_id: pick(agent, FISH_AGENT_ID_ENV),
+    phone_number_id: pick(phone, FISH_PHONE_NUMBER_ID_ENV),
+  };
+}
+
+/** Mask a secret for display: keeps a short head + tail only. */
+export function maskSecret(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  if (v.length <= 12) return `${v.slice(0, 2)}…`;
+  return `${v.slice(0, 8)}…${v.slice(-4)}`;
+}
+
+/** Persist Fish credentials entered in the app (partial update, DB wins). */
+export async function saveFishConfig(input: {
+  fish_api_key?: unknown;
+  fish_agent_id?: unknown;
+  fish_phone_number_id?: unknown;
+}): Promise<void> {
+  await ensureSchema();
+  const writes: Array<[string, string]> = [];
+  if (typeof input.fish_api_key === "string" && input.fish_api_key.trim()) {
+    writes.push(["fish_api_key", input.fish_api_key.trim()]);
+  }
+  if (typeof input.fish_agent_id === "string" && input.fish_agent_id.trim()) {
+    writes.push(["fish_agent_id", input.fish_agent_id.trim()]);
+  }
+  if (typeof input.fish_phone_number_id === "string" && input.fish_phone_number_id.trim()) {
+    writes.push(["fish_phone_number_id", input.fish_phone_number_id.trim()]);
+  }
+  for (const [key, value] of writes) await setSetting(key, value);
 }

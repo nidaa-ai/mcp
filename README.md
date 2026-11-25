@@ -64,25 +64,29 @@ git clone https://github.com/nidaa-ai/mcp
 
 ### 2) Deploy على Vercel
 
-افتح [vercel.com/new](https://vercel.com/new) → **Import** الريبو → قبل أول Deploy ظبّط الـ Environment Variables (**5 متغيرات بس — مفيش كود دخول خالص**):
+افتح [vercel.com/new](https://vercel.com/new) → **Import** الريبو → قبل أول Deploy ظبّط الـ Environment Variables (**متغيرين بس**):
 
 | المتغير | القيمة | ملاحظات |
 |---|---|---|
-| `FISH_API_KEY` | `sk-fish-...` | من [fish.audio](https://fish.audio) → API keys |
-| `FISH_AGENT_ID` | `d0df6840a7454f92aa818ff8575eeff4` | الـ agent **hussain** (جاهز عندك) |
-| `FISH_PHONE_NUMBER_ID` | `ab10a45646d84f1f8d31aacf359de261` | رقم Twilio `+13202335431` |
-| `TURSO_DATABASE_URL` | `libsql://nidaa-mcp-nidaa.aws-us-east-1.turso.io` | |
-| `TURSO_AUTH_TOKEN` | `eyJ...` | |
+| `TURSO_DATABASE_URL` | `libsql://nidaa-mcp-nidaa.aws-us-east-1.turso.io` | **مطلوب** |
+| `TURSO_AUTH_TOKEN` | `eyJ...` | **مطلوب** |
 
-> **الدخول بقى بإيميلك مباشرة** — مفيش `APP_ACCESS_CODE` خالص. افتح التطبيق، اكتب إيميلك، اضغط «تسجيل الدخول»، وخلص. (لو حبيت تقفل التطبيق على إيميلات معينة ضيف `NIDAA_ALLOWED_EMAILS=you@gmail.com` — اختياري تمامًا.)
+> **كل حاجة تانية بتتظبط من جوّه التطبيق** — مش محتاج أي Environment Variables إضافية:
 >
-> `AGENT_API_KEY` اختياري: لو مش محدد، التطبيق يولّد مفتاح تلقائيًا ويعرضه جوّه صفحة «اربط إيجنتك» بعد الدخول.
+> - **الدخول:** بإيميلك مباشرة (مفيش كود ولا باسورد)
+> - **إعدادات Fish Audio** (`FISH_API_KEY` / `FISH_AGENT_ID` / `FISH_PHONE_NUMBER_ID`): بعد أول دخول، في بطاقة **«إعدادات Fish Audio»** — الصق الـ API Key بتاعك (الـ Agent ID ورقم Twilio متكتبين جاهزين) واضغط «حفظ الإعدادات». القيم بتتخزن في جدول `settings` في Turso، ومفيش حاجة تتحط على Vercel.
+> - `AGENT_API_KEY` بيتولّد تلقائيًا وبيظهر جوّه التطبيق
+>
+> (لو حبيت تقفل التطبيق على إيميلات معينة: `NIDAA_ALLOWED_EMAILS=you@gmail.com` — اختياري)
 
 اضغط **Deploy**. (الـ `maxDuration` لكل route متظبط في `vercel.json` — الخطة المجانية كفاية.)
 
-### 3) اربط Fish Audio (زر واحد)
+### 3) اربط Fish Audio (خطوتين من التطبيق)
 
-افتح التطبيق على الموبايل → **سجّل دخول بإيميلك** (من غير باسورد) → في آخر الصفحة زر **«اربط»** — ده بيعمل الآتي تلقائيًا:
+افتح التطبيق على الموبايل → **سجّل دخول بإيميلك** (من غير باسورد) → بعد كده:
+
+1. في بطاقة **«إعدادات Fish Audio»**: الصق الـ API Key (الـ Agent ID `d0df6840a7454f92aa818ff8575eeff4` ورقم Twilio `ab10a45646d84f1f8d31aacf359de261` متكتبين جاهزين) → **حفظ الإعدادات** — القيم بتتخزن في Turso والتطبيق بيتأكد من الإيجنت على طول
+2. اضغط زر **«اربط»** في آخر صفحة «اربط إيجنتك» — ده بيعمل الآتي تلقائيًا:
 
 - Custom LLM → `https://تطبيقك/api/llm/v1` (جسر الصوت)
 - Webhook → `https://تطبيقك/api/fish/webhook` (call.ended / call.analyzed بتتسجّل تلقائي)
@@ -90,10 +94,10 @@ git clone https://github.com/nidaa-ai/mcp
 - تعطيل speculative responses + نشر (Publish) النسخة الجديدة
 - ربط رقم Twilio `+13202335431` بنفس الإيجنت
 
-أو من الترمنال:
+أو من الترمنال (بيقرأ إعدادات Fish من Turso لو مش في الـ env):
 
 ```bash
-node scripts/setup-fish.mjs https://تطبيقك.vercel.app
+TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... node scripts/setup-fish.mjs https://تطبيقك.vercel.app
 ```
 
 ### 4) اربط إيجنتك (كونفج جاهز)

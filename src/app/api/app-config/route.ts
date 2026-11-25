@@ -1,10 +1,9 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { getAgentApiKey, getVapidKeys } from "@/lib/settings";
+import { getAgentApiKey, getVapidKeys, getFishConfig, maskSecret } from "@/lib/settings";
 import { getAgentInfo } from "@/lib/fish";
 import { listCalls, publicCall, markRingingTimeouts } from "@/lib/calls";
-import { FISH_AGENT_ID } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +26,7 @@ export async function GET(req: NextRequest) {
     .execute({ sql: "SELECT user_email FROM devices WHERE id = ?", args: [token] })
     .then((rs) => (rs.rows[0]?.user_email as string | null) ?? null)
     .catch(() => null);
+  const fishCfg = await getFishConfig();
 
   const mcpUrl = `${origin}/api/mcp?key=${key}`;
   const restBase = `${origin}/api`;
@@ -36,7 +36,13 @@ export async function GET(req: NextRequest) {
     agent_api_key: key,
     user_email: user,
     vapid_public_key: vapid.publicKey ?? null,
-    fish_agent: agent ? { ...agent, configured: !!FISH_AGENT_ID } : { configured: !!FISH_AGENT_ID },
+    fish_agent: agent ? { ...agent, configured: !!fishCfg.agent_id && !!fishCfg.api_key } : { configured: !!fishCfg.agent_id && !!fishCfg.api_key },
+    fish_config: {
+      api_key_set: !!fishCfg.api_key,
+      api_key_masked: maskSecret(fishCfg.api_key),
+      agent_id: fishCfg.agent_id,
+      phone_number_id: fishCfg.phone_number_id,
+    },
     recent_calls: calls.map(publicCall),
     configs: {
       chatgpt: {
