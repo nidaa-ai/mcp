@@ -14,6 +14,7 @@ import {
   Fish, Save, Loader2,
 } from "lucide-react";
 import type { AppConfig } from "./types";
+import { GITHUB_URL } from "@/lib/project-info";
 
 function CopyBox({ label, text }: { label: string; text: string }) {
   const [copied, setCopied] = useState(false);
@@ -339,11 +340,11 @@ export function Home({
           <CardContent className="p-4 pt-2">
             <Tabs defaultValue="chatgpt" dir="rtl">
               <TabsList className="grid w-full grid-cols-5 bg-black/30 h-9">
-                <TabsTrigger value="chatgpt" className="text-[10px] px-0 whitespace-nowrap data-[state=active]:text-white">ChatGPT</TabsTrigger>
-                <TabsTrigger value="claude" className="text-[10px] px-0 whitespace-nowrap data-[state=active]:text-white">Claude</TabsTrigger>
-                <TabsTrigger value="cursor" className="text-[10px] px-0 whitespace-nowrap data-[state=active]:text-white">Cursor</TabsTrigger>
-                <TabsTrigger value="json" className="text-[10px] px-0 whitespace-nowrap data-[state=active]:text-white">MCP</TabsTrigger>
-                <TabsTrigger value="rest" className="text-[10px] px-0 whitespace-nowrap data-[state=active]:text-white">REST</TabsTrigger>
+                <TabsTrigger value="chatgpt" className="text-[10px] px-0 whitespace-nowrap text-violet-200/70 data-[state=active]:text-white data-[state=active]:bg-violet-500/25 dark:data-[state=active]:bg-violet-500/25">ChatGPT</TabsTrigger>
+                <TabsTrigger value="claude" className="text-[10px] px-0 whitespace-nowrap text-violet-200/70 data-[state=active]:text-white data-[state=active]:bg-violet-500/25 dark:data-[state=active]:bg-violet-500/25">Claude</TabsTrigger>
+                <TabsTrigger value="cursor" className="text-[10px] px-0 whitespace-nowrap text-violet-200/70 data-[state=active]:text-white data-[state=active]:bg-violet-500/25 dark:data-[state=active]:bg-violet-500/25">Cursor</TabsTrigger>
+                <TabsTrigger value="json" className="text-[10px] px-0 whitespace-nowrap text-violet-200/70 data-[state=active]:text-white data-[state=active]:bg-violet-500/25 dark:data-[state=active]:bg-violet-500/25">MCP</TabsTrigger>
+                <TabsTrigger value="rest" className="text-[10px] px-0 whitespace-nowrap text-violet-200/70 data-[state=active]:text-white data-[state=active]:bg-violet-500/25 dark:data-[state=active]:bg-violet-500/25">REST</TabsTrigger>
               </TabsList>
 
               <TabsContent value="chatgpt" className="space-y-3 mt-3">
@@ -407,6 +408,10 @@ export function Home({
         <footer className="pt-2 text-center">
           <p className="text-[10px] text-violet-200/40 leading-relaxed">
             نداء — MCP Server + Voice Agents على Fish Audio · MCP: <span dir="ltr">{config.origin}/api/mcp</span>
+          </p>
+          <p className="text-[10px] text-violet-200/40 leading-relaxed mt-1">
+            {"مجاني ومفتوح المصدر · صاحب المشروع: حسين شعبان · GitHub: "}
+            <a dir="ltr" href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-violet-200/70">{GITHUB_URL.replace("https://", "")}</a>
           </p>
         </footer>
       </div>

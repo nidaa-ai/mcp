@@ -3,21 +3,34 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, PhoneCall, Mail } from "lucide-react";
+import { ArrowRight, Loader2, PhoneCall, Mail } from "lucide-react";
 
 export function Login({
   busy,
   error,
   onLogin,
+  onBack,
 }: {
   busy: boolean;
   error: string | null;
   onLogin: (email: string) => void;
+  onBack?: () => void;
 }) {
   const [email, setEmail] = useState("");
 
   return (
     <div className="min-h-screen bg-[#0f0a1c] text-white flex flex-col items-center justify-center p-6">
+      {onBack && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="absolute top-4 start-4 h-9 px-3 text-violet-200/70 hover:text-white hover:bg-violet-500/20"
+          onClick={onBack}
+        >
+          <ArrowRight className="h-4 w-4" aria-hidden />
+          <span className="text-xs">الصفحة الرئيسية</span>
+        </Button>
+      )}
       <div className="w-full max-w-sm space-y-8 text-center">
         <div className="space-y-4">
           <div className="mx-auto h-20 w-20 rounded-3xl bg-gradient-to-b from-violet-500 to-purple-800 flex items-center justify-center shadow-lg shadow-violet-900/50">
