@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, unauthorized, isValidDevice } from "@/lib/auth";
-import { getCall, endCallInternal } from "@/lib/calls";
+import { getCall, endCallInternal, callVisibleTo } from "@/lib/calls";
 import { endVoiceSession } from "@/lib/fish";
+import { deviceEmail, fishConfigForCall } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,11 +18,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const call = await getCall(id);
   if (!call) return Response.json({ error: "not found" }, { status: 404 });
+  const email = await deviceEmail(token);
+  if (!callVisibleTo(call, email)) return Response.json({ error: "not found" }, { status: 404 });
   if (["ended", "missed", "declined", "failed"].includes(call.status)) {
     return Response.json({ ok: true, status: call.status, note: "already ended" });
   }
 
-  if (call.fish_session_id) await endVoiceSession(call.fish_session_id);
+  if (call.fish_session_id) await endVoiceSession(call.fish_session_id, await fishConfigForCall(call));
   await endCallInternal(id, call.answered_at ? "ended" : "declined", "user");
   return Response.json({ ok: true, status: call.answered_at ? "ended" : "declined", ended_by: "user" });
 }

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
-import { checkAgentAuth, checkDeviceToken, unauthorized } from "@/lib/auth";
-import { getCall, getEventsSince, markRingingTimeouts, publicCall } from "@/lib/calls";
+import { resolveAgentAuth, unauthorized } from "@/lib/auth";
+import { getCall, getEventsSince, markRingingTimeouts, publicCall, callVisibleTo } from "@/lib/calls";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +11,8 @@ export const maxDuration = 60;
  * POST /api/calls/{id}/updates — send an agent update (REST mirror of send_call_update).
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  if (!(await checkAgentAuth(req))) return unauthorized();
+  const ctx = await resolveAgentAuth(req);
+  if (!ctx) return unauthorized();
   const { id } = await params;
   const url = new URL(req.url);
   const since = Number(url.searchParams.get("since") ?? 0) || 0;
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   await markRingingTimeouts();
   let call = await getCall(id);
-  if (!call) return Response.json({ error: "not found" }, { status: 404 });
+  if (!call || !callVisibleTo(call, ctx.email)) return Response.json({ error: "not found" }, { status: 404 });
   let events = await getEventsSince(id, since);
 
   if (wait > 0) {
@@ -43,7 +44,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  if (!(await checkAgentAuth(req))) return unauthorized();
+  const ctx = await resolveAgentAuth(req);
+  if (!ctx) return unauthorized();
   const { id } = await params;
   let body: Record<string, unknown>;
   try {
@@ -56,7 +58,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     call_id: id,
     message: body.message ?? body.text ?? "",
     kind: body.kind ?? "announcement",
-  });
+  }, ctx);
   const isError = "isError" in result && result.isError;
   try {
     return Response.json(JSON.parse(result.content[0].text as string), { status: isError ? 400 : 200 });

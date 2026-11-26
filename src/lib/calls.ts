@@ -10,6 +10,7 @@ export type EventKind = "user_speech" | "agent_update" | "system" | "summary";
 
 export interface CallRow {
   id: string;
+  user_email: string | null;
   title: string;
   summary: string;
   priority: string;
@@ -41,6 +42,7 @@ export interface CallEvent {
 export function toCallRow(row: Record<string, unknown>): CallRow {
   return {
     id: row.id as string,
+    user_email: (row.user_email as string | null) ?? null,
     title: row.title as string,
     summary: row.summary as string,
     priority: row.priority as string,
@@ -100,6 +102,8 @@ export interface CreateCallInput {
   priority?: string;
   task_ref?: string;
   source?: string;
+  /** Owning account — every call belongs to exactly one user. */
+  user_email?: string | null;
 }
 
 export async function createCall(input: CreateCallInput): Promise<CallRow> {
@@ -107,10 +111,11 @@ export async function createCall(input: CreateCallInput): Promise<CallRow> {
   const id = randomUUID().replace(/-/g, "").slice(0, 12);
   const now = Date.now();
   await db.execute({
-    sql: `INSERT INTO calls (id, title, summary, priority, task_ref, source, status, created_at, last_activity)
-          VALUES (?, ?, ?, ?, ?, ?, 'ringing', ?, ?)`,
+    sql: `INSERT INTO calls (id, user_email, title, summary, priority, task_ref, source, status, created_at, last_activity)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'ringing', ?, ?)`,
     args: [
       id,
+      input.user_email ?? null,
       input.title?.slice(0, 200) ?? "",
       input.summary.slice(0, 20_000),
       ["low", "normal", "high", "urgent"].includes(input.priority ?? "") ? input.priority! : "normal",
@@ -135,13 +140,25 @@ export async function getCall(id: string): Promise<CallRow | null> {
   return row ? toCallRow(row as unknown as Record<string, unknown>) : null;
 }
 
-export async function listCalls(limit = 20): Promise<CallRow[]> {
+export async function listCalls(limit = 20, userEmail?: string | null): Promise<CallRow[]> {
   await ensureSchema();
+  const scoped = typeof userEmail === "string" && userEmail.length > 0;
   const rs = await db.execute({
-    sql: "SELECT * FROM calls ORDER BY created_at DESC LIMIT ?",
-    args: [limit],
+    sql: scoped
+      ? "SELECT * FROM calls WHERE user_email = ? ORDER BY created_at DESC LIMIT ?"
+      : "SELECT * FROM calls ORDER BY created_at DESC LIMIT ?",
+    args: scoped ? [userEmail, limit] : [limit],
   });
   return rs.rows.map((r) => toCallRow(r as unknown as Record<string, unknown>));
+}
+
+/**
+ * Ownership check: a call is visible to its owner's account. Legacy
+ * (ownerless) calls and the legacy global key keep the old open behavior.
+ */
+export function callVisibleTo(call: CallRow, email: string | null): boolean {
+  if (!call.user_email || !email) return true; // legacy call or legacy key
+  return call.user_email === email;
 }
 
 /** Flip stale ringing calls to missed. */

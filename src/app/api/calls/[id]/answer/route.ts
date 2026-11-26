@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, unauthorized, isValidDevice } from "@/lib/auth";
-import { getCall, setCallFields, addEvent, markRingingTimeouts, publicCall } from "@/lib/calls";
+import { getCall, setCallFields, addEvent, markRingingTimeouts, publicCall, callVisibleTo } from "@/lib/calls";
 import { createVoiceSession, buildFirstMessage } from "@/lib/fish";
+import { deviceEmail, fishConfigForCall } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,8 +10,9 @@ export const maxDuration = 30;
 
 /**
  * POST /api/calls/{id}/answer — the user accepted the call.
- * Creates the Fish Audio voice session and returns the session token JSON
- * (fed verbatim to AgentSession.start({ sessionToken }) in the browser).
+ * Creates the Fish Audio voice session with the CALL OWNER's credentials and
+ * returns the session token JSON (fed verbatim to AgentSession.start in the
+ * browser).
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const token = checkDeviceToken(req);
@@ -20,12 +22,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   await markRingingTimeouts();
   const call = await getCall(id);
   if (!call) return Response.json({ error: "not found" }, { status: 404 });
+  const email = await deviceEmail(token);
+  if (!callVisibleTo(call, email)) return Response.json({ error: "not found" }, { status: 404 });
   if (["ended", "missed", "declined", "failed"].includes(call.status)) {
     return Response.json({ error: `call already ${call.status}` }, { status: 409 });
   }
 
+  // Multi-tenant: the voice session opens with THIS account's Fish credentials.
+  const cfg = await fishConfigForCall(call);
+  if (!cfg.api_key || !cfg.agent_id) {
+    return Response.json(
+      {
+        error:
+          "لازم تحط مفتاح Fish Audio وAgent ID بتوعك الأول — من بطاقة «إعدادات Fish Audio» في التطبيق",
+        code: "fish_not_configured",
+      },
+      { status: 502 },
+    );
+  }
+
   try {
-    const session = await createVoiceSession(call.id, call.title, call.summary);
+    const session = await createVoiceSession(call.id, call.title, call.summary, cfg);
     await setCallFields(id, {
       status: "active",
       answered_at: Date.now(),

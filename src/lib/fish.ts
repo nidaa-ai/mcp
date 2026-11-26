@@ -1,25 +1,27 @@
 import { FISH_API_BASE } from "./env";
-import { getFishConfig } from "./settings";
+import type { FishConfig } from "./settings";
 
-/** Thin REST client for the Fish Audio Voice Agents API. */
-async function fish(path: string, init?: RequestInit): Promise<Response> {
-  const { api_key } = await getFishConfig();
-  if (!api_key) throw new Error("FISH_API_KEY is not set — add it in the app settings");
+/**
+ * Thin REST client for the Fish Audio Voice Agents API.
+ * Every function takes an EXPLICIT FishConfig — the credentials of the user
+ * who owns the call/agent (multi-tenant: no shared global key).
+ */
+
+async function fish(path: string, cfg: FishConfig, init?: RequestInit): Promise<Response> {
+  if (!cfg.api_key) throw new Error("FISH_API_KEY is not set — add it in the app settings");
   return fetch(`${FISH_API_BASE}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${api_key}`,
+      Authorization: `Bearer ${cfg.api_key}`,
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
   });
 }
 
-/** Resolve the voice agent id (DB setting, env fallback). */
-export async function agentId(): Promise<string> {
-  const { agent_id } = await getFishConfig();
-  if (!agent_id) throw new Error("FISH_AGENT_ID is not set — add it in the app settings");
-  return agent_id;
+function requireAgentId(cfg: FishConfig): string {
+  if (!cfg.agent_id) throw new Error("FISH_AGENT_ID is not set — add it in the app settings");
+  return cfg.agent_id;
 }
 
 /**
@@ -51,15 +53,21 @@ export interface FishSessionResponse {
 }
 
 /**
- * Create a Fish voice session for one call. `llm_extra_body.call_id` rides
- * every custom-LLM request back to us, and `overrides.first_message` makes
- * the agent open the call by reading the summary verbatim.
+ * Create a Fish voice session for one call, with the CALL OWNER's
+ * credentials. `llm_extra_body.call_id` rides every custom-LLM request back
+ * to us, and `overrides.first_message` makes the agent open the call by
+ * reading the summary verbatim.
  */
-export async function createVoiceSession(callId: string, title: string, summary: string): Promise<FishSessionResponse> {
-  const res = await fish("/v1/agent/sessions", {
+export async function createVoiceSession(
+  callId: string,
+  title: string,
+  summary: string,
+  cfg: FishConfig,
+): Promise<FishSessionResponse> {
+  const res = await fish("/v1/agent/sessions", cfg, {
     method: "POST",
     body: JSON.stringify({
-      agent_id: await agentId(),
+      agent_id: requireAgentId(cfg),
       end_user_id: "owner",
       metadata: { call_id: callId, app: "nidaa" },
       llm_extra_body: { call_id: callId },
@@ -77,18 +85,19 @@ export async function createVoiceSession(callId: string, title: string, summary:
 }
 
 /** Force-end a live Fish session (used when the user hangs up from the app). */
-export async function endVoiceSession(sessionId: string): Promise<void> {
+export async function endVoiceSession(sessionId: string, cfg: FishConfig): Promise<void> {
+  if (!cfg.api_key) return; // nothing we can do without credentials
   try {
-    await fish(`/v1/agent/sessions/${sessionId}/end`, { method: "POST" });
+    await fish(`/v1/agent/sessions/${sessionId}/end`, cfg, { method: "POST" });
   } catch {
     // best effort — the webhook is the reliable fallback
   }
 }
 
 /** GET the session record (transcript, status). */
-export async function getFishSession(sessionId: string): Promise<Record<string, unknown> | null> {
+export async function getFishSession(sessionId: string, cfg: FishConfig): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fish(`/v1/agent/sessions/${encodeURIComponent(sessionId)}`);
+    const res = await fish(`/v1/agent/sessions/${encodeURIComponent(sessionId)}`, cfg);
     if (!res.ok) return null;
     return (await res.json()) as Record<string, unknown>;
   } catch {
@@ -103,13 +112,14 @@ export interface FishAgentInfo {
   publication_state: string;
 }
 
-export async function getAgentInfo(): Promise<FishAgentInfo | null> {
+export async function getAgentInfo(cfg: FishConfig): Promise<FishAgentInfo | null> {
+  if (!cfg.api_key || !cfg.agent_id) return null;
   try {
-    const res = await fish(`/v1/agent/agents/${await agentId()}`);
+    const res = await fish(`/v1/agent/agents/${encodeURIComponent(cfg.agent_id)}`, cfg);
     if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;
     return {
-      agent_id: body.agent_id as string,
+      agent_id: (body.agent_id as string) ?? cfg.agent_id,
       name: body.name as string,
       status: body.status as string,
       publication_state: body.publication_state as string,
@@ -119,27 +129,33 @@ export async function getAgentInfo(): Promise<FishAgentInfo | null> {
   }
 }
 
-/** PATCH agent config (draft). Used by the one-click "link Fish" admin action. */
-export async function patchAgentConfig(patch: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const res = await fish(`/v1/agent/agents/${await agentId()}/config`, { method: "PATCH", body: JSON.stringify(patch) });
+/** PATCH agent config (draft). Used by the one-click "link Fish" action. */
+export async function patchAgentConfig(
+  patch: Record<string, unknown>,
+  cfg: FishConfig,
+): Promise<Record<string, unknown>> {
+  const res = await fish(`/v1/agent/agents/${encodeURIComponent(requireAgentId(cfg))}/config`, cfg, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`Fish config patch failed (${res.status}): ${JSON.stringify(body).slice(0, 400)}`);
   return body;
 }
 
 /** Publish the agent draft so new sessions pick up the config. */
-export async function publishAgent(): Promise<Record<string, unknown>> {
-  const res = await fish(`/v1/agent/agents/${await agentId()}/publish`, { method: "POST" });
+export async function publishAgent(cfg: FishConfig): Promise<Record<string, unknown>> {
+  const res = await fish(`/v1/agent/agents/${encodeURIComponent(requireAgentId(cfg))}/publish`, cfg, { method: "POST" });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`Fish publish failed (${res.status}): ${JSON.stringify(body).slice(0, 400)}`);
   return body;
 }
 
 /** Bind the Twilio phone number to the agent (inbound phone calls). */
-export async function bindPhoneNumber(phoneNumberId: string): Promise<Record<string, unknown>> {
-  const res = await fish(`/v1/agent/phone-numbers/${phoneNumberId}`, {
+export async function bindPhoneNumber(phoneNumberId: string, cfg: FishConfig): Promise<Record<string, unknown>> {
+  const res = await fish(`/v1/agent/phone-numbers/${encodeURIComponent(phoneNumberId)}`, cfg, {
     method: "PATCH",
-    body: JSON.stringify({ agent_id: await agentId() }),
+    body: JSON.stringify({ agent_id: requireAgentId(cfg) }),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`Phone bind failed (${res.status}): ${JSON.stringify(body).slice(0, 400)}`);

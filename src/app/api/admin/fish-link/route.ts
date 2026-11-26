@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
-import { getAgentApiKey, getFishWebhookSecret, getFishConfig } from "@/lib/settings";
 import { patchAgentConfig, publishAgent, bindPhoneNumber } from "@/lib/fish";
+import { deviceEmail, ensureUserApiKey, getUserFishConfig, webhookSecretFor } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,8 +10,8 @@ export const maxDuration = 60;
 /**
  * The brain Fish's own agent uses (platform fallback model + this prompt).
  * One goal: the voice understands it is a LIVE RELAY to the user's connected
- * agent — it improvises its own natural Egyptian filler, NEVER claims lack
- * of access, NEVER self-executes, and treats «رد الإيجنت: ...» lines as
+ * agent — it improvises its own natural Egyptian filler, NEVER claims lack of
+ * access, NEVER self-executes, and treats «رد الإيجنت: ...» lines as
  * already-delivered agent speech.
  */
 const AGENT_SYSTEM_PROMPT = `إنت «نداء» — الصوت الحي اللي المستخدم بيسمعه على المكالمة. بتتكلم عربي مصري ببساطة، بجمل قصيرة تناسب المكالمة الصوتية.
@@ -29,10 +29,13 @@ const AGENT_SYSTEM_PROMPT = `إنت «نداء» — الصوت الحي الل�
 متستخدمش كلمات إنجليزي غير الضروري، ومتطولش في الكلام. متقفلش المكالمة من نفسك أبداً — المستخدم بس اللي يقفل.`;
 
 /**
- * POST /api/admin/fish-link — one-click setup on the Fish Audio side:
- *  1) point the agent's custom LLM at this deployment (OpenAI-compatible bridge),
+ * POST /api/admin/fish-link — one-click setup on the Fish Audio side, using
+ * THIS ACCOUNT's own Fish credentials (multi-tenant):
+ *  1) point the agent's custom LLM at this deployment (OpenAI-compatible
+ *     bridge, authenticated with the account's own agent API key),
  *  2) disable speculative responses (cleaner MCP turn logging),
- *  3) register our webhook for call.ended / call.analyzed,
+ *  3) register our webhook for call.ended / call.analyzed — with a per-user
+ *     secret and ?user= tag so phone events are attributed to this account,
  *  4) set the Arabic system prompt + platform-model fallback,
  *  5) publish the agent, and optionally bind the Twilio number.
  * Body: { bind_phone_number_id?: string }
@@ -41,10 +44,15 @@ export async function POST(req: NextRequest) {
   const token = checkDeviceToken(req);
   if (!token || !(await isValidDevice(token))) return Response.json({ error: "unauthorized device token" }, { status: 401 });
 
-  const fishCfg = await getFishConfig();
+  const email = await deviceEmail(token);
+  if (!email) {
+    return Response.json({ error: "الجهاز ده مش مرتبط بحساب — سجّل دخول تاني بالإيميل" }, { status: 400 });
+  }
+
+  const fishCfg = await getUserFishConfig(email);
   if (!fishCfg.api_key || !fishCfg.agent_id) {
     return Response.json(
-      { error: "اضبط إعدادات Fish Audio الأول (API Key + Agent ID) من بطاقة الإعدادات في التطبيق" },
+      { error: "اضبط إعدادات Fish Audio بتاعتك الأول (API Key + Agent ID) من بطاقة الإعدادات في التطبيق" },
       { status: 400 },
     );
   }
@@ -55,11 +63,12 @@ export async function POST(req: NextRequest) {
   } catch { /* empty body ok */ }
 
   const origin = new URL(req.url).origin;
-  const apiKey = await getAgentApiKey();
-  const webhookSecret = await getFishWebhookSecret();
+  const apiKey = await ensureUserApiKey(email);
+  const webhookSecret = webhookSecretFor(apiKey);
+  const webhookUrl = `${origin}/api/fish/webhook?user=${encodeURIComponent(email)}`;
   const results: Record<string, unknown> = {};
 
-  // 1) custom LLM → our bridge endpoint
+  // 1) custom LLM → our bridge endpoint (this account's key)
   try {
     await patchAgentConfig({
       llm: {
@@ -73,7 +82,7 @@ export async function POST(req: NextRequest) {
           models: [{ model: "openai/gpt-6.1-sol-fast" }],
         },
       },
-    });
+    }, fishCfg);
   } catch (err) {
     return Response.json(
       { error: `Fish Audio رفض الاتصال — راجع الـ API Key في بطاقة الإعدادات (${(err as Error).message.slice(0, 160)})` },
@@ -86,7 +95,7 @@ export async function POST(req: NextRequest) {
   try {
     await patchAgentConfig({
       conversation: { speculative_response: false, hangup_after_seconds: 600 },
-    });
+    }, fishCfg);
     results.conversation = "speculative_response=false, hangup_after_seconds=600";
   } catch (err) {
     results.conversation = `partial: ${(err as Error).message}`;
@@ -94,38 +103,38 @@ export async function POST(req: NextRequest) {
 
   // 3) system prompt (persona for fallback/phone sessions)
   try {
-    await patchAgentConfig({ prompt: { system_prompt: AGENT_SYSTEM_PROMPT } });
+    await patchAgentConfig({ prompt: { system_prompt: AGENT_SYSTEM_PROMPT } }, fishCfg);
     results.system_prompt = "ok";
   } catch (err) {
     results.system_prompt = `failed: ${(err as Error).message}`;
   }
 
-  // 4) webhooks
+  // 4) webhooks — per-user secret so phone events map back to this account
   try {
     await patchAgentConfig({
-      webhooks: { post_call: [{ url: `${origin}/api/fish/webhook`, secret: webhookSecret }] },
-    });
-    results.webhook = `${origin}/api/fish/webhook`;
+      webhooks: { post_call: [{ url: webhookUrl, secret: webhookSecret }] },
+    }, fishCfg);
+    results.webhook = webhookUrl;
   } catch (err) {
     results.webhook = `failed: ${(err as Error).message}`;
   }
 
   // 5) publish
-  const pub = await publishAgent();
+  const pub = await publishAgent(fishCfg);
   results.published = pub;
 
-  // 6) bind the Twilio number for inbound phone calls (saved in the app
-  //    settings, or passed explicitly in the request body)
+  // 6) bind the Twilio number for inbound phone calls (saved in the
+  //    account settings, or passed explicitly in the request body)
   const bindId =
     typeof body.bind_phone_number_id === "string" ? body.bind_phone_number_id : fishCfg.phone_number_id;
   if (bindId) {
     try {
-      const bound = await bindPhoneNumber(bindId);
+      const bound = await bindPhoneNumber(bindId, fishCfg);
       results.phone_bound = bound;
     } catch (err) {
       results.phone_bound = `failed: ${(err as Error).message}`;
     }
   }
 
-  return Response.json({ ok: true, origin, agent_id: fishCfg.agent_id, results });
+  return Response.json({ ok: true, origin, email, agent_id: fishCfg.agent_id, results });
 }

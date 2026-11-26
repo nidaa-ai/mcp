@@ -64,7 +64,7 @@ function timeAgo(ts: number) {
   return new Date(ts).toLocaleDateString("ar-EG");
 }
 
-/** In-app Fish Audio credentials form — saved to the Turso settings table. */
+/** In-app Fish Audio credentials form — saved to THIS account only (multi-tenant). */
 function FishSettingsCard({
   config,
   saving,
@@ -76,8 +76,8 @@ function FishSettingsCard({
 }) {
   const fc = config.fish_config;
   const [apiKey, setApiKey] = useState("");
-  const [agentId, setAgentId] = useState(fc.agent_id || "d0df6840a7454f92aa818ff8575eeff4");
-  const [phoneId, setPhoneId] = useState(fc.phone_number_id || "ab10a45646d84f1f8d31aacf359de261");
+  const [agentId, setAgentId] = useState(fc.agent_id || "");
+  const [phoneId, setPhoneId] = useState(fc.phone_number_id || "");
 
   const chips: Array<[string, boolean]> = [
     ["API Key", !!fc.api_key_set],
@@ -109,7 +109,7 @@ function FishSettingsCard({
       </CardHeader>
       <CardContent className="p-4 pt-2 space-y-3">
         <p className="text-[11px] text-violet-200/60 leading-relaxed">
-          القيم دي بتتخزن في قاعدة البيانات — مفيش حاجة تتحط على Vercel. سيب حاجة فاضية لو مش عايز تغيّرها.
+          القيم دي بتتحفظ لحسابك إنت بس — كل مستخدم بيجيب مفتاح Fish بتاعه لوحده، وكل واحد مكالماته ومفتاح ربط الإيجنت بتاعه. مفيش حاجة بتتحط على Vercel. سيب حاجة فاضية لو مش عايز تغيّرها.
         </p>
         <form
           className="space-y-3"
@@ -140,24 +140,24 @@ function FishSettingsCard({
             )}
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-agent-id">Agent ID (hussain)</label>
+            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-agent-id">Agent ID</label>
             <Input
               id="fish-agent-id"
               dir="ltr"
               autoComplete="off"
-              placeholder="d0df6840a7454f92aa818ff8575eeff4"
+              placeholder="حط الـ Agent ID بتاعك من fish.audio (hex)"
               value={agentId}
               onChange={(e) => setAgentId(e.target.value)}
               className="h-10 bg-white/5 border-violet-400/20 text-sm focus:border-violet-400/60"
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-phone-id">Phone Number ID (رقم Twilio)</label>
+            <label className="text-xs font-medium text-violet-200/80" htmlFor="fish-phone-id">Phone Number ID (اختياري)</label>
             <Input
               id="fish-phone-id"
               dir="ltr"
               autoComplete="off"
-              placeholder="ab10a45646d84f1f8d31aacf359de261"
+              placeholder="حط الـ Phone Number ID بتاعك من Twilio (hex)"
               value={phoneId}
               onChange={(e) => setPhoneId(e.target.value)}
               className="h-10 bg-white/5 border-violet-400/20 text-sm focus:border-violet-400/60"

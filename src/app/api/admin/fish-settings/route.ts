@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
-import { saveFishConfig, getFishConfig, maskSecret } from "@/lib/settings";
+import { maskSecret } from "@/lib/settings";
 import { getAgentInfo } from "@/lib/fish";
+import { deviceEmail, saveUserFishConfig, getUserFishConfig } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,9 +11,9 @@ export const maxDuration = 30;
 const HEX_ID = /^[a-f0-9]{16,64}$/i;
 
 /**
- * POST /api/admin/fish-settings — save the Fish Audio credentials entered
- * inside the app (stored in the Turso settings table; env vars become a
- * fallback). Body (all optional, partial update):
+ * POST /api/admin/fish-settings — save THIS account's Fish Audio credentials
+ * (multi-tenant: stored per user in the users table, never shared). Body
+ * (all optional, partial update):
  *   { fish_api_key?, fish_agent_id?, fish_phone_number_id? }
  * After saving, verifies the key+agent against the Fish API and returns the
  * agent info so the UI can confirm immediately.
@@ -20,6 +21,11 @@ const HEX_ID = /^[a-f0-9]{16,64}$/i;
 export async function POST(req: NextRequest) {
   const token = checkDeviceToken(req);
   if (!token || !(await isValidDevice(token))) return Response.json({ error: "unauthorized device token" }, { status: 401 });
+
+  const email = await deviceEmail(token);
+  if (!email) {
+    return Response.json({ error: "الجهاز ده مش مرتبط بحساب — سجّل دخول تاني بالإيميل" }, { status: 400 });
+  }
 
   let body: Record<string, unknown>;
   try {
@@ -45,14 +51,15 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "مفيش حاجة تتخزن — اكتب قيمة واحدة على الأقل" }, { status: 400 });
   }
 
-  await saveFishConfig({ fish_api_key: apiKey, fish_agent_id: agentId, fish_phone_number_id: phoneId });
+  await saveUserFishConfig(email, { fish_api_key: apiKey, fish_agent_id: agentId, fish_phone_number_id: phoneId });
 
-  const cfg = await getFishConfig();
+  const cfg = await getUserFishConfig(email);
   // live verification against Fish (only if key+agent are both set)
-  const agent = cfg.api_key && cfg.agent_id ? await getAgentInfo().catch(() => null) : null;
+  const agent = cfg.api_key && cfg.agent_id ? await getAgentInfo(cfg).catch(() => null) : null;
 
   return Response.json({
     ok: true,
+    email,
     fish_config: {
       api_key_set: !!cfg.api_key,
       api_key_masked: maskSecret(cfg.api_key),

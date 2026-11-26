@@ -7,9 +7,11 @@ import {
   getPendingAgentUpdates,
   publicCall,
   isAgentFollowing,
+  callVisibleTo,
 } from "./calls";
-import { sendPushToAll } from "./push";
+import { sendPushToUser } from "./push";
 import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS } from "./env";
+import type { AgentContext } from "./auth";
 
 export const PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 export const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -131,7 +133,11 @@ function errText(message: string) {
 const LOOP_HINT_AR =
   "الخطوة الجاية: نادِ wait_for_call_updates بنفس call_id في حلقة — كل ندهة بترجّع كلام المستخدم الجديد أثناء المكالمة. لو رجعت فاضية والمكالمة لسه مفتوحة ده معناه صمت طبيعي — نادِها تاني فورًا. لو طلب منك حاجة، نفذها فورًا وبعّت النتيجة بـ send_call_update (هتتقال بصوت عالي جوه المكالمة). متقفلش الدردشة خالص غير لما يرجع ended=true (المستخدم بس اللي يقفل).";
 
-export async function dispatchTool(name: string, args: Record<string, unknown>): Promise<ReturnType<typeof textResult> | ReturnType<typeof errText>> {
+export async function dispatchTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: AgentContext = { email: null },
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errText>> {
   switch (name) {
     case "notify_task_complete": {
       const summary = String(args.summary ?? "").trim();
@@ -142,8 +148,9 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
         priority: args.priority ? String(args.priority) : undefined,
         task_ref: args.task_ref ? String(args.task_ref) : undefined,
         source: "mcp",
+        user_email: ctx.email,
       });
-      await sendPushToAll({
+      await sendPushToUser(ctx.email, {
         call_id: call.id,
         title: call.title || "مكالمة من الإيجنت",
         body: summary.slice(0, 120),
@@ -172,7 +179,7 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       let waitSec = Number.isFinite(Number(args.wait_seconds)) ? Number(args.wait_seconds) : WAIT_DEFAULT_SECONDS;
       waitSec = Math.max(0, Math.min(WAIT_MAX_SECONDS, waitSec));
       const { call, events } = await waitForUpdates(callId, since, waitSec * 1000);
-      if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
+      if (!call || !callVisibleTo(call, ctx.email)) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
       const ended = ["ended", "missed", "declined", "failed"].includes(call.status);
       const nextSince = events.length ? Math.max(...events.map((e) => e.seq)) : since;
       const ageSec = Math.max(0, Math.round((Date.now() - call.created_at) / 1000));
@@ -250,9 +257,9 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       const message = String(args.message ?? "").trim();
       if (!callId || !message) return errText("call_id و message مطلوبين (call_id and message are required)");
       const call = await getCall(callId);
-      if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
+      if (!call || !callVisibleTo(call, ctx.email)) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
       if (["ended", "missed", "declined", "failed"].includes(call.status)) {
-        await sendPushToAll({
+        await sendPushToUser(call.user_email, {
           call_id: callId,
           title: "رد الإيجنت وصل بعد ما قفلت",
           body: message.slice(0, 160),
@@ -290,7 +297,7 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
       const callId = args.call_id ? String(args.call_id).trim() : "";
       if (callId) {
         const call = await getCall(callId);
-        if (!call) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
+        if (!call || !callVisibleTo(call, ctx.email)) return errText(`مفيش مكالمة بالمعرّف ده: ${callId} (unknown call_id)`);
         const pending = await getPendingAgentUpdates(callId, false);
         const ended = ["ended", "missed", "declined", "failed"].includes(call.status);
         const following = isAgentFollowing(call);
@@ -305,7 +312,7 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
           pending_agent_updates: pending.length,
         });
       }
-      const calls = await listCalls(10);
+      const calls = await listCalls(10, ctx.email);
       const live = calls.find((c) => !["ended", "missed", "declined", "failed"].includes(c.status));
       return textResult({
         directive: live

@@ -2,19 +2,46 @@ import { NextRequest } from "next/server";
 import { getAgentApiKey } from "./settings";
 import { NIDAA_ALLOWED_EMAILS } from "./env";
 import { db, ensureSchema } from "./db";
+import { getUserByApiKey } from "./users";
 
 export type ApiError = { error: string };
 
+/**
+ * Auth context for the MCP endpoint and the REST API. email = the owning
+ * account when the key belongs to a user (multi-tenant), or null for the
+ * legacy global key (pre-migration / env-pinned deployments).
+ */
+export interface AgentContext {
+  email: string | null;
+}
+
+/** Extract the raw API key from Bearer / ?key= / x-api-key. */
+function extractKey(req: NextRequest): string {
+  const header = req.headers.get("authorization") ?? "";
+  if (header.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
+  const url = new URL(req.url);
+  return url.searchParams.get("key") ?? req.headers.get("x-api-key") ?? "";
+}
+
+/**
+ * Resolve the request's API key to a user context:
+ *  1. a user's own agent_api_key → that user (calls/push scoped to them),
+ *  2. the legacy global key → null-email legacy context (old behavior),
+ *  3. anything else → null (unauthorized).
+ */
+export async function resolveAgentAuth(req: NextRequest): Promise<AgentContext | null> {
+  const key = extractKey(req);
+  if (!key) return null;
+  const user = await getUserByApiKey(key);
+  if (user) return { email: user.email };
+  const globalKey = await getAgentApiKey();
+  if (key.toLowerCase() === globalKey.toLowerCase()) return { email: null };
+  return null;
+}
+
 /** Auth used by the MCP endpoint and the REST API (and Fish custom LLM). */
 export async function checkAgentAuth(req: NextRequest): Promise<boolean> {
-  const key = await getAgentApiKey();
-  const header = req.headers.get("authorization") ?? "";
-  if (header.toLowerCase() === `bearer ${key.toLowerCase()}`) return true;
-  const url = new URL(req.url);
-  if (url.searchParams.get("key") === key) return true;
-  const custom = req.headers.get("x-api-key");
-  if (custom === key) return true;
-  return false;
+  return (await resolveAgentAuth(req)) !== null;
 }
 
 export function unauthorized() {

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
 import { db, ensureSchema } from "@/lib/db";
 import { listCalls, getEventsSince, markRingingTimeouts } from "@/lib/calls";
+import { deviceEmail } from "@/lib/users";
 import { bus } from "@/lib/bus";
 
 export const runtime = "nodejs";
@@ -10,13 +11,15 @@ export const maxDuration = 60;
 
 /**
  * GET /api/events?token=DEVICE_TOKEN — Server-Sent Events channel for the
- * web app: incoming calls, live updates, status changes.
+ * web app: incoming calls, live updates, status changes. MULTI-TENANT: only
+ * the events of the calls owned by THIS device's account are streamed.
  * Polls the DB (serverless-safe) and wakes early on the in-process bus.
  */
 export async function GET(req: NextRequest) {
   const token = checkDeviceToken(req);
   if (!token || !(await isValidDevice(token))) return Response.json({ error: "unauthorized device token" }, { status: 401 });
   await ensureSchema();
+  const email = await deviceEmail(token);
   await db.execute({ sql: "UPDATE devices SET last_seen = ? WHERE id = ?", args: [Date.now(), token] });
 
   const url = new URL(req.url);
@@ -59,7 +62,7 @@ export async function GET(req: NextRequest) {
       const tick = async () => {
         try {
           await markRingingTimeouts();
-          const events = await getNewEvents(cursor);
+          const events = await getNewEvents(cursor, email);
           for (const e of events) {
             cursor = Math.max(cursor, e.seq);
             if (e.kind === "agent_update") {
@@ -71,7 +74,7 @@ export async function GET(req: NextRequest) {
             }
           }
           // report silent status changes (missed / ended)
-          const calls = await listCalls(10);
+          const calls = await listCalls(10, email);
           for (const c of calls) {
             if (["missed", "declined", "ended", "failed"].includes(c.status) && (c.ended_at ?? 0) > 0) {
               const evs = await getEventsSince(c.id, 0, ["system"]);
@@ -123,10 +126,16 @@ async function getMaxSeq(): Promise<number> {
   return Number(row?.s ?? 0);
 }
 
-async function getNewEvents(cursor: number) {
+async function getNewEvents(cursor: number, email: string | null) {
   const rs = await db.execute({
-    sql: "SELECT * FROM call_events WHERE seq > ? ORDER BY seq ASC LIMIT 100",
-    args: [cursor],
+    sql: `
+      SELECT e.seq, e.call_id, e.kind, e.text, e.created_at
+      FROM call_events e
+      JOIN calls c ON c.id = e.call_id
+      WHERE e.seq > ? AND (c.user_email = ? OR ? IS NULL)
+      ORDER BY e.seq ASC LIMIT 100
+    `,
+    args: [cursor, email, email],
   });
   return rs.rows.map((r) => ({
     seq: r.seq as number,

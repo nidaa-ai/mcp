@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { getFishWebhookSecret } from "@/lib/settings";
 import { getCall, endCallInternal, addEvent, setCallFields, createCall } from "@/lib/calls";
 import { db, ensureSchema } from "@/lib/db";
+import { getUserByEmail, webhookSecretFor } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,11 +13,27 @@ export const maxDuration = 30;
  * POST /api/fish/webhook — Fish Audio webhook receiver.
  * Handles call.ended / call.analyzed / phone_call.dial_finished, verifies the
  * HMAC signature, and mirrors the result into the Nidaa call record.
+ *
+ * MULTI-TENANT: each account's agent registers this URL as
+ * /api/fish/webhook?user=<email> with a per-user secret — phone events map
+ * back to the owning account. Requests without ?user= fall back to the
+ * legacy global secret (pre-migration webhook registrations).
  */
 export async function POST(req: NextRequest) {
   const raw = await req.text();
   const signature = req.headers.get("x-fish-webhook-signature") ?? "";
-  const secret = await getFishWebhookSecret();
+
+  const userParam = new URL(req.url).searchParams.get("user");
+  let secret: string;
+  let ownerEmail: string | null = null;
+  if (userParam) {
+    const owner = await getUserByEmail(userParam.trim().toLowerCase());
+    if (!owner?.agent_api_key) return new Response(null, { status: 401 });
+    secret = webhookSecretFor(owner.agent_api_key);
+    ownerEmail = owner.email;
+  } else {
+    secret = await getFishWebhookSecret();
+  }
   if (secret) {
     const ok = verifySignature(raw, signature, secret);
     if (!ok) return new Response(null, { status: 401 });
@@ -52,12 +69,14 @@ export async function POST(req: NextRequest) {
       }
     } else if (sessionId && event === "call.ended") {
       // A phone call to the bound Twilio number (no Nidaa call mapping).
+      // Owned by the account whose webhook delivered it.
       const source = String(session.source ?? "phone");
       if (source === "phone" || source === "whatsapp") {
         const call = await createCall({
           title: `مكالمة ${source === "phone" ? "هاتفية" : "واتساب"} — ${sessionId.slice(0, 8)}`,
           summary: "مكالمة وردت على الرقم المرتبط بالإيجنت.",
           source,
+          user_email: ownerEmail,
         });
         await setCallFields(call.id, {
           status: "ended",

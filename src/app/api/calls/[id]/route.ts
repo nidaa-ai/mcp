@@ -1,24 +1,28 @@
 import { NextRequest } from "next/server";
-import { checkAgentAuth, checkDeviceToken, unauthorized, isValidDevice } from "@/lib/auth";
-import { getCall, getEventsSince, getPendingAgentUpdates, markRingingTimeouts, publicCall } from "@/lib/calls";
+import { resolveAgentAuth, checkDeviceToken, unauthorized, isValidDevice } from "@/lib/auth";
+import { getCall, getEventsSince, getPendingAgentUpdates, markRingingTimeouts, publicCall, callVisibleTo } from "@/lib/calls";
+import { deviceEmail } from "@/lib/users";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/calls/{id} — call status + full timeline.
- * Auth: agent key (REST) OR device token (the web app).
+ * Auth: agent key (REST, scoped to the owning user) OR device token (the web app).
+ * A call is only visible to the account that owns it.
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const isAgent = await checkAgentAuth(req);
+  const ctx = await resolveAgentAuth(req);
   const deviceToken = checkDeviceToken(req);
   const isDevice = !!deviceToken && (await isValidDevice(deviceToken));
-  if (!isAgent && !isDevice) return unauthorized();
+  if (!ctx && !isDevice) return unauthorized();
 
   await markRingingTimeouts();
   const call = await getCall(id);
   if (!call) return Response.json({ error: "not found" }, { status: 404 });
+  const viewer = ctx?.email ?? (deviceToken ? await deviceEmail(deviceToken) : null);
+  if (!callVisibleTo(call, viewer)) return Response.json({ error: "not found" }, { status: 404 });
   const events = await getEventsSince(id, 0);
   const pending = await getPendingAgentUpdates(id, false);
   return Response.json({

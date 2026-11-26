@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { checkAgentAuth, unauthorized } from "@/lib/auth";
+import { resolveAgentAuth, unauthorized } from "@/lib/auth";
 import { DEFAULT_PROTOCOL_VERSION, PROTOCOL_VERSIONS, SERVER_INFO, INSTRUCTIONS, TOOLS, dispatchTool } from "@/lib/mcp";
 
 export const runtime = "nodejs";
@@ -29,7 +29,8 @@ function json(body: unknown, status = 200) {
  * POST /api/mcp (or /api/mcp?key=...) — JSON-RPC 2.0.
  */
 export async function POST(req: NextRequest) {
-  if (!(await checkAgentAuth(req))) return unauthorized();
+  const ctx = await resolveAgentAuth(req);
+  if (!ctx) return unauthorized();
 
   let msg: Record<string, unknown>;
   try {
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
       const args = (params.arguments ?? {}) as Record<string, unknown>;
       if (!TOOLS[name]) return replyErr(-32602, `Unknown tool: ${name}`);
       try {
-        const result = await dispatchTool(name, args);
+        const result = await dispatchTool(name, args, ctx);
         const isError = "isError" in result && result.isError;
         const payload: Record<string, unknown> = { content: result.content };
         if (isError) payload.isError = true;
@@ -113,7 +114,7 @@ export async function POST(req: NextRequest) {
 
 // Stateless server: no server-initiated SSE channel.
 export async function GET(req: NextRequest) {
-  if (!(await checkAgentAuth(req))) return unauthorized();
+  if (!(await resolveAgentAuth(req))) return unauthorized();
   return new Response(
     JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "SSE channel not supported; use POST (stateless server)." } }),
     { status: 405, headers: { ...CORS, "Content-Type": "application/json", Allow: "POST, OPTIONS" } },
