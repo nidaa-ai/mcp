@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { checkDeviceToken, isValidDevice } from "@/lib/auth";
 import { db, ensureSchema } from "@/lib/db";
-import { listCalls, getEventsSince, markRingingTimeouts } from "@/lib/calls";
+import { markRingingTimeouts } from "@/lib/calls";
 import { deviceEmail } from "@/lib/users";
 import { bus } from "@/lib/bus";
 
@@ -70,18 +70,16 @@ export async function GET(req: NextRequest) {
             } else if (e.kind === "summary") {
               send("call:incoming", { call_id: e.call_id, seq: e.seq, text: e.text, ts: e.created_at });
             } else {
-              send("call:event", { call_id: e.call_id, seq: e.seq, kind: e.kind, text: e.text, ts: e.created_at });
-            }
-          }
-          // report silent status changes (missed / ended)
-          const calls = await listCalls(10, email);
-          for (const c of calls) {
-            if (["missed", "declined", "ended", "failed"].includes(c.status) && (c.ended_at ?? 0) > 0) {
-              const evs = await getEventsSince(c.id, 0, ["system"]);
-              const lastEv = evs[evs.length - 1];
-              if (lastEv && lastEv.seq > cursor) {
-                cursor = lastEv.seq;
-                send("call:status", { call_id: c.id, status: c.status, ended_by: c.ended_by, text: lastEv.text, ts: lastEv.created_at });
+              // A system event carrying an end status is the ONLY reliable
+              // signal that a call finished (hangup, webhook, missed timeout).
+              // Deliver it as call:status — the frame the app relies on to stop
+              // the ringtone, close the call screen and flip the recent-calls
+              // badge live. Emitting it as a bare call:event left all that stuck.
+              const end = endStatusOf(e.meta);
+              if (end) {
+                send("call:status", { call_id: e.call_id, seq: e.seq, status: end.status, ended_by: end.ended_by, text: e.text, ts: e.created_at });
+              } else {
+                send("call:event", { call_id: e.call_id, seq: e.seq, kind: e.kind, text: e.text, ts: e.created_at });
               }
             }
           }
@@ -129,7 +127,7 @@ async function getMaxSeq(): Promise<number> {
 async function getNewEvents(cursor: number, email: string | null) {
   const rs = await db.execute({
     sql: `
-      SELECT e.seq, e.call_id, e.kind, e.text, e.created_at
+      SELECT e.seq, e.call_id, e.kind, e.text, e.meta, e.created_at
       FROM call_events e
       JOIN calls c ON c.id = e.call_id
       WHERE e.seq > ? AND (c.user_email = ? OR ? IS NULL)
@@ -142,6 +140,19 @@ async function getNewEvents(cursor: number, email: string | null) {
     call_id: r.call_id as string,
     kind: r.kind as string,
     text: (r.text as string | null) ?? null,
+    meta: (r.meta as string | null) ?? null,
     created_at: r.created_at as number,
   }));
+}
+
+/** endCallInternal stamps { status, ended_by } on its system event — read it back. */
+function endStatusOf(meta: string | null): { status: string; ended_by?: string } | null {
+  if (!meta) return null;
+  try {
+    const m = JSON.parse(meta) as { status?: unknown; ended_by?: unknown };
+    if (typeof m.status === "string" && ["ended", "missed", "declined", "failed"].includes(m.status)) {
+      return { status: m.status, ended_by: typeof m.ended_by === "string" ? m.ended_by : undefined };
+    }
+  } catch { /* not JSON */ }
+  return null;
 }

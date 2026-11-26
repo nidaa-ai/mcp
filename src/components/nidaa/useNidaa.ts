@@ -124,7 +124,16 @@ export function useNidaa() {
     try { sessionRef.current?.end(); } catch { /* noop */ }
     sessionRef.current = null;
     void playBlip("hangup");
-    if (tokenRef.current) void loadConfig(tokenRef.current);
+    // The server-side end (POST /end, Fish webhook, MCP) usually lands a beat
+    // AFTER the UI closes — a single immediate fetch races it and leaves the
+    // recent-calls list stuck on "نشطة". Refresh now, then re-sync shortly
+    // after so the badge flips to "خلصت" without a full page reload.
+    if (tokenRef.current) {
+      const refresh = () => { if (tokenRef.current) void loadConfig(tokenRef.current); };
+      refresh();
+      setTimeout(refresh, 2_500);
+      setTimeout(refresh, 8_000);
+    }
   }, [loadConfig]);
 
   /* -------------------------------------------------------------- SSE ---- */
@@ -204,8 +213,12 @@ export function useNidaa() {
       es.addEventListener("hello", () => { failures = 0; });
 
       on("call:incoming", async (data) => {
+        // Ended-call screen ("رجوع") still open? Clear it so THIS call can ring —
+        // otherwise its banner stays hidden behind the old call screen.
+        setActive((prev) => (prev && (prev.status === "ended" || prev.status === "error") ? null : prev));
         if (activeIdRef.current || busyRef.current) return; // already in a call
         busyRef.current = true;
+        void loadConfig(token); // show the new ringing call in the recent list
         try {
           const res = await fetch(`/api/calls/${data.call_id}?token=${token}`, { cache: "no-store" });
           const call = (await res.json()) as { id: string; title: string; summary: string; status: string };
@@ -238,13 +251,18 @@ export function useNidaa() {
 
       on("call:status", (data) => {
         const status = String(data.status ?? "");
-        if (data.call_id === activeIdRef.current && ["ended", "missed", "declined", "failed"].includes(status)) {
+        const ended = ["ended", "missed", "declined", "failed"].includes(status);
+        if (data.call_id === activeIdRef.current && ended) {
           finishCallUI(`المكالمة انتهت (${status})`);
-        } else if (incomingRef.current && data.call_id === incomingRef.current.id && ["missed", "declined", "ended", "failed"].includes(status)) {
+        } else if (incomingRef.current && data.call_id === incomingRef.current.id && ended) {
           ringtoneRef.current?.stop();
           setIncoming(null);
           busyRef.current = false;
         }
+        // A call ended server-side while we are NOT in it (our own hangup just
+        // fired, the Fish webhook landed, a ringing call timed out) — refresh
+        // so the recent list flips "نشطة/بيرن" to "خلصت" live.
+        if (ended && data.call_id !== activeIdRef.current) void loadConfig(token);
       });
 
       on("call:event", (data) => {
@@ -284,7 +302,7 @@ export function useNidaa() {
       es?.close();
       esRef.current = null;
     };
-  }, [phase, injectAgentUpdate, finishCallUI]);
+  }, [phase, injectAgentUpdate, finishCallUI, loadConfig]);
 
   /**
    * Safety net while the voice session is live: if the SSE stream ever missed
@@ -371,7 +389,17 @@ export function useNidaa() {
         setActive((prev) => (prev ? { ...prev, mode } : prev));
       });
       session.on("disconnect", ({ reason }) => {
-        if (activeIdRef.current === callId) finishCallUI(reason === "user_hangup" ? "قفلت المكالمة" : `انتهت: ${reason}`);
+        if (activeIdRef.current !== callId) return;
+        finishCallUI(reason === "user_hangup" ? "قفلت المكالمة" : `انتهت: ${reason}`);
+        // The voice channel died on OUR side — tell the server so the call is
+        // marked ended even if the Fish webhook never arrives (otherwise the
+        // DB row stays "active" forever and the agent's heartbeat loop hangs).
+        void fetch(`/api/calls/${callId}/end`, {
+          method: "POST",
+          headers: { "x-device-token": token },
+        })
+          .catch(() => {})
+          .finally(() => { if (tokenRef.current) void loadConfig(tokenRef.current); });
       });
       session.on("error", (err) => {
         showToast(`خطأ في الجلسة: ${err?.code ?? "unknown"}`);
@@ -418,7 +446,9 @@ export function useNidaa() {
     if (!token || !id) return;
     finishCallUI("قفلت المكالمة");
     await fetch(`/api/calls/${id}/end`, { method: "POST", headers: { "x-device-token": token } }).catch(() => {});
-  }, [active, finishCallUI]);
+    // the DB just flipped to "ended" — pull it so the recent list is correct NOW
+    void loadConfig(token);
+  }, [active, finishCallUI, loadConfig]);
 
   const toggleMute = useCallback(async () => {
     const session = sessionRef.current;
