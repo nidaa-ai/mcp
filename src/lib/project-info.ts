@@ -25,3 +25,20 @@ export const PAYPAL_EMAIL = "hussainandshabaan@gmail.com";
 /** لينك التبرع عبر PayPal بنفس الإيميل / PayPal donate link for the same email */
 export const PAYPAL_DONATE_URL =
   "https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=hussainandshabaan@gmail.com&currency_code=USD&item_name=Nidaa+Support";
+
+/**
+ * تحميل تطبيق أندرويد الرسمي (APK) من MediaFire.
+ * Official Android app (APK) download link.
+ */
+export const ANDROID_APK_URL =
+  "https://www.mediafire.com/file/9h00v2ue7ebsxhd/nidaa-1.2.0-release.apk/file";
+
+/**
+ * تحميل كود مصدر تطبيق أندرويد (مفتوح المصدر) من MediaFire.
+ * Android app open-source code download link.
+ */
+export const ANDROID_SOURCE_URL =
+  "https://www.mediafire.com/file/p83v2dr1e5sqt47/nidaa-android-source.zip/file";
+
+/** رقم إصدار تطبيق أندرويد / Android app version */
+export const ANDROID_APP_VERSION = "1.2.0";

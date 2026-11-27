@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import {
   PhoneCall, Plug, Download, Zap, ShieldCheck, MessageSquare,
   Github, Youtube, Send, Globe, LogIn, Heart, Copy, Check,
-  Star, Sparkles, Bot, Mic,
+  Star, Sparkles, Bot, Mic, FolderCode,
 } from "lucide-react";
 import {
   PROJECT_OWNER_AR, PROJECT_OWNER_EN,
   GITHUB_URL, YOUTUBE_URL, TELEGRAM_URL, PAYPAL_EMAIL, PAYPAL_DONATE_URL,
+  ANDROID_APK_URL, ANDROID_SOURCE_URL, ANDROID_APP_VERSION,
 } from "@/lib/project-info";
 
 type Lang = "ar" | "en";
@@ -57,6 +58,14 @@ const T = {
     madeBy: "صاحب المشروع",
     freeLine: "نداء — مجاني ومفتوح المصدر",
     rights: "جميع الحقوق محفوظة",
+    appTitle: "تطبيق أندرويد رسمي",
+    appSub: "نداء بقى تطبيق أندرويد حقيقي — حمّله وثبّته على موبايلك بضغطة، أو خد كود المصدر وابنيه بنفسك.",
+    apkName: "تطبيق أندرويد — APK",
+    apkDesc: `تحميل مباشر · إصدار ${ANDROID_APP_VERSION}`,
+    apkHint: "ثبّته على هاتفك من غير متجر",
+    srcName: "كود التطبيق مفتوح المصدر",
+    srcDesc: "حمّل مشروع الأندرويد كامل · ZIP",
+    srcHint: "ابنِ التطبيق بنفسك",
   },
   en: {
     appName: "Nidaa",
@@ -99,8 +108,35 @@ const T = {
     madeBy: "Project by",
     freeLine: "Nidaa — free & open source",
     rights: "All rights reserved",
+    appTitle: "Official Android app",
+    appSub: "Nidaa is now a real Android app — download it and install it on your phone in one tap, or grab the source code and build it yourself.",
+    apkName: "Android app — APK",
+    apkDesc: `Direct download · v${ANDROID_APP_VERSION}`,
+    apkHint: "Installs on your phone, no store needed",
+    srcName: "App source code (open source)",
+    srcDesc: "Full Android project · ZIP",
+    srcHint: "Build the app yourself",
   },
 } as const;
+
+/** أيقونة Google Play — مثلث الألوان الأربعة / Google Play style triangle mark */
+function GooglePlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden focusable="false">
+      <defs>
+        <clipPath id="gp-clip" clipPathUnits="userSpaceOnUse">
+          <path d="M5.41 3.75 L19.59 11.25 Q21 12 19.59 12.75 L5.41 20.25 Q4 21 4 19.4 L4 4.6 Q4 3 5.41 3.75 Z" />
+        </clipPath>
+      </defs>
+      <g clipPath="url(#gp-clip)">
+        <polygon points="4,3 12.8,7.7 9,12" fill="#00A0FF" />
+        <polygon points="12.8,7.7 21,12 12.8,16.3 9,12" fill="#00C853" />
+        <polygon points="4,21 12.8,16.3 9,12" fill="#FFC400" />
+        <polygon points="4,3 9,12 4,21" fill="#FF3D00" />
+      </g>
+    </svg>
+  );
+}
 
 function SocialLink({
   href, label, icon: Icon, hover,
@@ -217,6 +253,46 @@ export function Landing({ onLogin }: { onLogin: () => void }) {
             </a>
           </div>
           <p className="text-xs text-violet-200/50">{t.noPass}</p>
+        </section>
+
+        {/* Android app downloads */}
+        <section className="pt-14 space-y-6">
+          <div className="space-y-2 text-center">
+            <h2 className="text-2xl font-bold">{t.appTitle}</h2>
+            <p className="text-sm text-violet-200/70 leading-relaxed max-w-xl mx-auto">{t.appSub}</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <a
+              href={ANDROID_APK_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group rounded-2xl bg-white/[0.03] border border-violet-400/10 p-5 flex items-center gap-4 hover:border-violet-400/30 transition-colors"
+            >
+              <div className="h-12 w-12 rounded-xl bg-white flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                <GooglePlayIcon className="h-6 w-6" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">{t.apkName}</p>
+                <p className="text-xs text-violet-200/60 leading-relaxed">{t.apkDesc}</p>
+                <p className="text-xs text-violet-200/40 leading-relaxed">{t.apkHint}</p>
+              </div>
+            </a>
+            <a
+              href={ANDROID_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group rounded-2xl bg-white/[0.03] border border-violet-400/10 p-5 flex items-center gap-4 hover:border-emerald-400/30 transition-colors"
+            >
+              <div className="h-12 w-12 rounded-xl bg-emerald-500/15 border border-emerald-400/25 flex items-center justify-center shrink-0 group-hover:scale-105 group-hover:bg-emerald-500/25 transition-all">
+                <FolderCode className="h-6 w-6 text-emerald-400" aria-hidden />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">{t.srcName}</p>
+                <p className="text-xs text-violet-200/60 leading-relaxed">{t.srcDesc}</p>
+                <p className="text-xs text-violet-200/40 leading-relaxed">{t.srcHint}</p>
+              </div>
+            </a>
+          </div>
         </section>
 
         {/* features */}
